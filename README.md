@@ -1,3 +1,12 @@
+---
+title: Chaos Auditor
+emoji: 🔥
+colorFrom: red
+colorTo: orange
+sdk: docker
+pinned: false
+---
+
 # Chaos Auditor — OpenEnv Environment
 
 **Train AI agents to find the one vulnerability a self-healing system's defenses can't detect.**
