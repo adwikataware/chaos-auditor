@@ -459,29 +459,44 @@ async def run_task(client: OpenAI, env: ChaosAuditorEnv, task_name: str) -> None
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
+async def create_env() -> ChaosAuditorEnv:
+    """Create environment client. Tries Docker image first, then URL fallback."""
+    image = LOCAL_IMAGE_NAME or IMAGE_NAME
+    hf_url = os.getenv("HF_SPACE_URL") or os.getenv("SPACE_URL")
+    local_url = os.getenv("LOCAL_URL")
+
+    # Try Docker image first (what judges typically provide)
+    if image:
+        try:
+            env = await ChaosAuditorEnv.from_docker_image(image)
+            return env
+        except Exception as e:
+            print(f"[DEBUG] from_docker_image failed: {e}", flush=True)
+
+    # Fallback to HF Space URL
+    if hf_url:
+        return ChaosAuditorEnv(base_url=hf_url, message_timeout_s=120)
+
+    # Fallback to local URL
+    if local_url:
+        return ChaosAuditorEnv(base_url=local_url, message_timeout_s=120)
+
+    # Last resort: localhost
+    return ChaosAuditorEnv(base_url="http://localhost:7860", message_timeout_s=120)
+
+
 async def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    # Determine how to connect to the environment:
-    # 1. If HF_SPACE_URL is set, connect to remote HF Space
-    # 2. If IMAGE_NAME is set, use local Docker image
-    # 3. Fallback to local server on port 7860
-    hf_space_url = os.getenv("HF_SPACE_URL") or os.getenv("SPACE_URL")
-    local_url = os.getenv("LOCAL_URL")
-
     for task_name in TASKS:
-        if hf_space_url:
-            env = ChaosAuditorEnv(base_url=hf_space_url, message_timeout_s=120)
-        elif IMAGE_NAME:
-            env = await ChaosAuditorEnv.from_docker_image(IMAGE_NAME)
-        elif local_url:
-            env = ChaosAuditorEnv(base_url=local_url, message_timeout_s=120)
-        else:
-            # Default: try connecting to local server
-            env = ChaosAuditorEnv(base_url="http://localhost:7860", message_timeout_s=120)
-
+        env = await create_env()
         await run_task(client, env, task_name)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"[DEBUG] Fatal error: {e}", flush=True)
+        import sys
+        sys.exit(1)
