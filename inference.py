@@ -459,8 +459,24 @@ async def run_task(client: OpenAI, env: ChaosAuditorEnv, task_name: str) -> None
 async def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
+    # Determine how to connect to the environment:
+    # 1. If HF_SPACE_URL is set, connect to remote HF Space
+    # 2. If IMAGE_NAME is set, use local Docker image
+    # 3. Fallback to local server on port 7860
+    hf_space_url = os.getenv("HF_SPACE_URL") or os.getenv("SPACE_URL")
+    local_url = os.getenv("LOCAL_URL")
+
     for task_name in TASKS:
-        env = await ChaosAuditorEnv.from_docker_image(IMAGE_NAME)
+        if hf_space_url:
+            env = ChaosAuditorEnv(base_url=hf_space_url, message_timeout_s=120)
+        elif IMAGE_NAME:
+            env = await ChaosAuditorEnv.from_docker_image(IMAGE_NAME)
+        elif local_url:
+            env = ChaosAuditorEnv(base_url=local_url, message_timeout_s=120)
+        else:
+            # Default: try connecting to local server
+            env = ChaosAuditorEnv(base_url="http://localhost:7860", message_timeout_s=120)
+
         await run_task(client, env, task_name)
 
 
