@@ -512,13 +512,13 @@ class ChaosAuditorEnvironment(
     def _do_submit_report(self) -> tuple[float, str]:
         """Calculate final score and end the episode."""
         if not self._findings:
-            return 0.0, (
+            return 0.001, (
                 "┌─────────────────────────────────────┐\n"
                 "│       AUDIT REPORT SUBMITTED         │\n"
                 "├─────────────────────────────────────┤\n"
                 "│  Findings: 0                         │\n"
                 "│  No vulnerabilities documented.      │\n"
-                "│  FINAL SCORE: 0.000                  │\n"
+                "│  FINAL SCORE: 0.001                  │\n"
                 "└─────────────────────────────────────┘"
             )
 
@@ -535,7 +535,9 @@ class ChaosAuditorEnvironment(
 
         total = max(0.0, finding_score + efficiency_bonus + stealth_bonus - false_penalty)
         max_possible = sum(v.weight for v in self._scenario.vulnerabilities) + 0.16
-        score = min(1.0, total / max(max_possible, 0.01))
+        # Clamp to strictly (0, 1) — judges require not exactly 0.0 or 1.0
+        score = total / max(max_possible, 0.01)
+        score = max(0.001, min(0.999, score))
 
         # Build detailed report
         lines = [

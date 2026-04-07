@@ -438,17 +438,16 @@ async def run_task(client: OpenAI, env: ChaosAuditorEnv, task_name: str) -> None
         if rewards:
             last_reward = rewards[-1]
             if last_reward > 0.1:
-                # submit_report returns the final normalized score
-                score = max(0.0, min(1.0, last_reward))
+                score = last_reward
             else:
-                # Auto-submitted or no report — sum positive rewards and normalize
-                positive = sum(r for r in rewards if r > 0)
-                score = max(0.0, min(1.0, positive))
+                score = sum(r for r in rewards if r > 0)
+        # Clamp to strictly (0, 1) — judges require not exactly 0.0 or 1.0
+        score = max(0.001, min(0.999, score))
         success = score >= 0.05
 
     except Exception as exc:
         print(f"[DEBUG] Task {task_name} error: {exc}", flush=True)
-        score = 0.0
+        score = 0.001
         success = False
 
     finally:
