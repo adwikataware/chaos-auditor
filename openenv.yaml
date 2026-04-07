@@ -1,0 +1,27 @@
+name: chaos-auditor
+description: >
+  Train AI agents to find vulnerabilities in self-healing distributed systems.
+  The highest reward goes to silent failures — damage that bypasses all monitoring alerts.
+  Features dynamic system simulation with health propagation, auto-restart, circuit breakers,
+  auto-scaling, and anomaly detection.
+version: "1.0.0"
+tags:
+  - openenv
+  - chaos-engineering
+  - security
+  - resilience-testing
+  - distributed-systems
+entry_point: chaos_auditor.server.app:app
+tasks:
+  - name: easy
+    description: >
+      4-service linear system with basic health checks and auto-restart.
+      Find the SPOF and the silent failures in monitoring blind spots.
+  - name: medium
+    description: >
+      7-service system with redundancy, circuit breakers, and load balancing.
+      Find silent corruption propagation and sub-threshold cascade failures.
+  - name: hard
+    description: >
+      12+ service fortress with full self-healing and anomaly detection.
+      Chain subtle attacks that stay below alert thresholds to find invisible failures.
