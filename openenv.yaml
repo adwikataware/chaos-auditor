@@ -1,27 +1,38 @@
 name: chaos-auditor
 description: >
-  Train AI agents to find vulnerabilities in self-healing distributed systems.
-  The highest reward goes to silent failures — damage that bypasses all monitoring alerts.
-  Features dynamic system simulation with health propagation, auto-restart, circuit breakers,
-  auto-scaling, and anomaly detection.
-version: "1.0.0"
+  Train AI agents to reason under partial observability in distributed systems.
+  The agent sees only what monitoring dashboards show — hidden metrics reveal the real state.
+  Use infer_state to reason about blind spots before confirming them.
+  Silent failures (damage without alerts) earn the highest reward.
+  Features procedural scenario generation (RLVE), step-level reward shaping,
+  circuit breakers, auto-scaling, memory leaks, and compound failure effects.
+version: "2.0.0"
 tags:
   - openenv
+  - partial-observability
   - chaos-engineering
-  - security
-  - resilience-testing
+  - world-modeling
   - distributed-systems
+  - rlve
 entry_point: chaos_auditor.server.app:app
 tasks:
   - name: easy
     description: >
       4-service linear system with basic health checks and auto-restart.
-      Find the SPOF and the silent failures in monitoring blind spots.
+      Find the SPOF and silent failures in monitoring blind spots.
+      Good starting point — multiple unmonitored metrics to discover.
   - name: medium
     description: >
       7-service system with redundancy, circuit breakers, and load balancing.
       Find silent corruption propagation and sub-threshold cascade failures.
+      Requires reasoning about what monitoring cannot see.
   - name: hard
     description: >
-      12+ service fortress with full self-healing and anomaly detection.
-      Chain subtle attacks that stay below alert thresholds to find invisible failures.
+      12-service fortress with full self-healing and anomaly detection.
+      Chain subtle attacks below alert thresholds to find invisible failures.
+      Compound effects, cluster quorum loss, and defense-masking vulnerabilities.
+  - name: random
+    description: >
+      Procedurally generated system — different topology, blind spots, and defenses every episode.
+      4 to 12 services, randomized dependency graph, ground truth computed from structure.
+      RLVE-compliant: infinite tasks, adaptive difficulty, no saturation.

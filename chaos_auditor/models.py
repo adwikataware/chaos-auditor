@@ -18,7 +18,7 @@ class ChaosAction(Action):
         description=(
             "Type of action: kill, spike_traffic, corrupt_data, add_latency, "
             "partition_network, fill_disk, exhaust_connections, "
-            "observe, deep_inspect, classify_finding, submit_report"
+            "observe, deep_inspect, infer_state, classify_finding, submit_report"
         )
     )
     target_service: Optional[str] = Field(
@@ -34,6 +34,8 @@ class ChaosAction(Action):
             "corrupt_data: {data_type: 'cache'}, "
             "fill_disk: {percentage: 90}, "
             "partition_network: {service_b: 'other-service'}, "
+            "infer_state: {metric: 'connection_count', predicted_state: 'high', "
+            "reasoning: 'response_time rising without CPU spike suggests connection exhaustion'}, "
             "classify_finding: {finding_type: str, severity: str, "
             "is_silent: bool, affected_services: list, root_cause: str, evidence: str}"
         ),
@@ -124,3 +126,10 @@ class AuditState(State):
     silent_failures_found: int = 0
     loud_failures_found: int = 0
     current_score: float = 0.0
+
+    # Partial observability reasoning metrics
+    stealth_ratio: float = 0.0          # silent damage actions / total chaos actions
+    obs_gap_exploit_rate: float = 0.0   # blind-spot targeted actions / total chaos actions
+    infer_attempts: int = 0             # total infer_state calls
+    infer_correct: int = 0              # correct inferences before deep_inspect
+    infer_accuracy: float = 0.0         # infer_correct / infer_attempts

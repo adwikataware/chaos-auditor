@@ -11,8 +11,9 @@ Each scenario defines:
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from chaos_auditor.server.simulation import Service, ServiceGraph
 
@@ -592,6 +593,265 @@ class HardScenario(Scenario):
         return graph
 
 
+class RandomScenario(Scenario):
+    """
+    Procedurally generated scenario — different every episode.
+
+    Randomly creates a service graph with:
+    - 4 to 12 services in a layered DAG
+    - Random monitoring blind spots per service
+    - Random defense configurations
+    - Ground truth vulnerabilities computed from graph structure
+
+    This makes Chaos Auditor an RLVE-compliant environment:
+    infinite tasks, adaptive difficulty, no saturation.
+    """
+
+    # Service name pools by role
+    _FRONTEND = ["api-gateway", "load-balancer", "nginx-proxy", "cdn-edge"]
+    _MIDTIER  = ["app-server", "auth-service", "payment-svc", "order-service",
+                 "search-service", "recommend-svc", "notification-svc", "user-service"]
+    _BACKEND  = ["database", "user-db", "order-db", "payment-db",
+                 "redis-cache", "redis-primary", "elasticsearch", "message-queue",
+                 "ml-model-cache", "blob-storage"]
+
+    # Metrics that can be left unmonitored (blind spots)
+    _BLINDABLE = [
+        "data_integrity", "connection_count", "disk_usage",
+        "memory_usage", "response_time_ms", "request_queue_depth",
+    ]
+    # Always monitored — removing these would make the env trivial
+    _ALWAYS_MONITORED = ["cpu_usage", "error_rate", "status"]
+
+    def __init__(self, seed: Optional[int] = None) -> None:
+        rng = random.Random(seed)
+        n_services = rng.randint(4, 12)
+
+        # Scale budget and steps with complexity
+        chaos_budget = max(6, n_services)
+        max_steps = max(12, n_services * 2)
+
+        super().__init__(
+            name="random",
+            description=(
+                f"Procedurally generated system with {n_services} services. "
+                "Topology, blind spots, and defenses are randomized each episode. "
+                "Discover the monitoring gaps and exploit them silently."
+            ),
+            chaos_budget=chaos_budget,
+            max_steps=max_steps,
+        )
+        self._rng = rng
+        self._n_services = n_services
+        self._built_graph: Optional[ServiceGraph] = None
+        self._built_vulns: Optional[List[GroundTruthVulnerability]] = None
+
+    def build_graph(self) -> ServiceGraph:
+        graph = ServiceGraph()
+        rng = self._rng
+
+        # Pick service names without repetition
+        frontends = rng.sample(self._FRONTEND, min(2, self._n_services))
+        remaining = self._n_services - len(frontends)
+        midtier_n = max(0, min(remaining // 2, len(self._MIDTIER)))
+        backend_n = max(1, remaining - midtier_n)
+
+        midtiers = rng.sample(self._MIDTIER, min(midtier_n, len(self._MIDTIER)))
+        backends = rng.sample(self._BACKEND, min(backend_n, len(self._BACKEND)))
+
+        all_names: List[str] = frontends + midtiers + backends
+
+        # Build layered dependency graph: frontend → midtier → backend
+        service_objects: Dict[str, Service] = {}
+
+        for name in all_names:
+            # Assign blind spots: randomly drop 2-4 metrics from monitoring
+            n_blind = rng.randint(2, 4)
+            blind = set(rng.sample(self._BLINDABLE, min(n_blind, len(self._BLINDABLE))))
+            monitored = self._ALWAYS_MONITORED + [
+                m for m in ["memory_usage", "response_time_ms", "connection_count",
+                            "disk_usage", "data_integrity", "request_queue_depth"]
+                if m not in blind
+            ]
+
+            # Random defenses
+            has_cb = rng.random() < 0.4
+            has_as = rng.random() < 0.3
+            has_ad = rng.random() < 0.2
+            restart_delay = rng.choice([2, 3, 4])
+            max_conn = rng.choice([100, 150, 200, 300])
+
+            service_objects[name] = Service(
+                name=name,
+                has_health_check=True,
+                has_auto_restart=True,
+                has_circuit_breaker=has_cb,
+                has_auto_scaling=has_as,
+                has_anomaly_detection=has_ad,
+                restart_delay=restart_delay,
+                max_connections=max_conn,
+                monitored_metrics=monitored,
+            )
+
+        # Wire dependencies: frontend → midtier, midtier → backend
+        for fname in frontends:
+            targets = midtiers if midtiers else backends
+            n_deps = min(rng.randint(1, 2), len(targets))
+            service_objects[fname].dependencies = rng.sample(targets, n_deps)
+
+        for mname in midtiers:
+            if backends:
+                n_deps = min(rng.randint(1, 2), len(backends))
+                service_objects[mname].dependencies = rng.sample(backends, n_deps)
+
+        for svc in service_objects.values():
+            graph.add_service(svc)
+
+        # Compute ground truth vulnerabilities from graph structure
+        # Cap at 5 vulnerabilities max — keeps grading clean and rewards meaningful
+        MAX_VULNS = 5
+        vulns: List[GroundTruthVulnerability] = []
+        weight_pool = 1.0
+        seen_types: Dict[str, int] = {}  # cap 2 per type for variety
+
+        for name, svc in service_objects.items():
+            if len(vulns) >= MAX_VULNS or weight_pool <= 0.05:
+                break
+
+            blind_set = set(self._BLINDABLE) - set(svc.monitored_metrics)
+
+            # Silent data corruption: data_integrity blind + has downstream consumers
+            consumers = [
+                n for n, s in service_objects.items()
+                if name in s.dependencies
+            ]
+            if (
+                "data_integrity" in blind_set
+                and consumers
+                and seen_types.get("silent_data_corruption", 0) < 2
+                and len(vulns) < MAX_VULNS
+            ):
+                w = round(min(0.30, weight_pool * 0.35), 2)
+                weight_pool -= w
+                seen_types["silent_data_corruption"] = seen_types.get("silent_data_corruption", 0) + 1
+                vulns.append(GroundTruthVulnerability(
+                    name=f"corruption_{name}",
+                    finding_type="silent_data_corruption",
+                    severity="critical",
+                    is_silent=True,
+                    affected_services=[name] + consumers[:2],
+                    root_cause=(
+                        f"Corrupting {name} data propagates to {', '.join(consumers[:2])}. "
+                        f"data_integrity is not monitored — no alert fires."
+                    ),
+                    how_to_trigger=f"corrupt_data({name})",
+                    weight=w,
+                ))
+
+            # Silent connection exhaustion: connection_count blind
+            if (
+                "connection_count" in blind_set
+                and seen_types.get("silent_connection_exhaustion", 0) < 2
+                and len(vulns) < MAX_VULNS
+            ):
+                w = round(min(0.25, weight_pool * 0.30), 2)
+                weight_pool -= w
+                upstream = [n for n, s in service_objects.items() if name in s.dependencies]
+                seen_types["silent_connection_exhaustion"] = seen_types.get("silent_connection_exhaustion", 0) + 1
+                vulns.append(GroundTruthVulnerability(
+                    name=f"conn_exhaust_{name}",
+                    finding_type="silent_connection_exhaustion",
+                    severity="high",
+                    is_silent=True,
+                    affected_services=[name] + upstream[:1],
+                    root_cause=(
+                        f"Exhausting {name} connection pool causes new requests to time out. "
+                        f"connection_count is not monitored."
+                    ),
+                    how_to_trigger=f"exhaust_connections({name})",
+                    weight=w,
+                ))
+
+            # Silent disk pressure: disk_usage blind
+            if (
+                "disk_usage" in blind_set
+                and weight_pool > 0.1
+                and seen_types.get("silent_disk_pressure", 0) < 1
+                and len(vulns) < MAX_VULNS
+            ):
+                w = round(min(0.20, weight_pool * 0.25), 2)
+                weight_pool -= w
+                seen_types["silent_disk_pressure"] = seen_types.get("silent_disk_pressure", 0) + 1
+                vulns.append(GroundTruthVulnerability(
+                    name=f"disk_{name}",
+                    finding_type="silent_disk_pressure",
+                    severity="high",
+                    is_silent=True,
+                    affected_services=[name],
+                    root_cause=(
+                        f"Filling {name} disk causes write failures. "
+                        f"disk_usage is not monitored."
+                    ),
+                    how_to_trigger=f"fill_disk({name}, 95)",
+                    weight=w,
+                ))
+
+            # Single point of failure: multiple upstream dependents, no replica
+            upstream = [n for n, s in service_objects.items() if name in s.dependencies]
+            if (
+                len(upstream) >= 2
+                and weight_pool > 0.1
+                and seen_types.get("single_point_of_failure", 0) < 1
+                and len(vulns) < MAX_VULNS
+            ):
+                w = round(min(0.20, weight_pool * 0.25), 2)
+                weight_pool -= w
+                seen_types["single_point_of_failure"] = seen_types.get("single_point_of_failure", 0) + 1
+                vulns.append(GroundTruthVulnerability(
+                    name=f"spof_{name}",
+                    finding_type="single_point_of_failure",
+                    severity="high",
+                    is_silent=False,
+                    affected_services=[name] + upstream[:2],
+                    root_cause=(
+                        f"{name} has no replica. Killing it takes down "
+                        f"{', '.join(upstream[:2])}."
+                    ),
+                    how_to_trigger=f"kill({name})",
+                    weight=w,
+                ))
+
+        # Ensure at least 2 vulnerabilities and weights sum correctly
+        if not vulns:
+            # Fallback: guarantee at least one silent finding
+            first_backend = backends[0] if backends else all_names[-1]
+            vulns.append(GroundTruthVulnerability(
+                name=f"fallback_corruption_{first_backend}",
+                finding_type="silent_data_corruption",
+                severity="high",
+                is_silent=True,
+                affected_services=[first_backend],
+                root_cause=f"data_integrity not monitored on {first_backend}.",
+                how_to_trigger=f"corrupt_data({first_backend})",
+                weight=0.50,
+            ))
+            vulns.append(GroundTruthVulnerability(
+                name=f"fallback_conn_{first_backend}",
+                finding_type="silent_connection_exhaustion",
+                severity="medium",
+                is_silent=True,
+                affected_services=[first_backend],
+                root_cause=f"connection_count not monitored on {first_backend}.",
+                how_to_trigger=f"exhaust_connections({first_backend})",
+                weight=0.50,
+            ))
+
+        self.vulnerabilities = vulns
+        self._built_graph = graph
+        self._built_vulns = vulns
+        return graph
+
+
 SCENARIOS: Dict[str, Scenario] = {
     "easy": EasyScenario(),
     "medium": MediumScenario(),
@@ -600,6 +860,10 @@ SCENARIOS: Dict[str, Scenario] = {
 
 
 def get_scenario(name: str) -> Scenario:
+    if name == "random":
+        return RandomScenario()
     if name not in SCENARIOS:
-        raise ValueError(f"Unknown scenario: {name}. Available: {list(SCENARIOS.keys())}")
+        raise ValueError(
+            f"Unknown scenario: '{name}'. Available: {list(SCENARIOS.keys()) + ['random']}"
+        )
     return SCENARIOS[name]

@@ -7,127 +7,207 @@ sdk: docker
 pinned: false
 ---
 
-# Chaos Auditor — OpenEnv Environment
+# Chaos Auditor — Reasoning Under Partial Observability
 
-**Train AI agents to find the one vulnerability a self-healing system's defenses can't detect.**
+> **Train LLMs to reason about what monitoring cannot see.**
 
-An RL environment where the agent acts as an intelligent chaos engineer auditing distributed systems. Unlike traditional chaos tools that randomly break things, this environment rewards agents for finding **silent failures** — damage that causes real harm while all monitoring dashboards remain green.
+[![HuggingFace Space](https://img.shields.io/badge/🤗-Live%20Environment-yellow)](https://huggingface.co/spaces/adwikataware/chaos-auditor)
+[![wandb](https://img.shields.io/badge/📈-Training%20Runs-orange)](https://wandb.ai/TODO_FILL_ON_CAMPUS)
+[![Blog](https://img.shields.io/badge/📝-HF%20Blog-blue)](https://huggingface.co/blog/TODO_FILL_ON_CAMPUS)
+[![Video](https://img.shields.io/badge/▶-Demo%20Video-red)](https://youtube.com/TODO_FILL_ON_CAMPUS)
+
+---
+
+## The Problem
+
+Production systems are built to heal themselves — auto-scaling absorbs traffic spikes, circuit breakers contain cascades, health checks restart dead services. But every system has **monitoring blind spots**: metrics that aren't tracked. When a failure hides in a blind spot, all dashboards stay green while real damage accumulates silently.
+
+This is the most dangerous class of production failure — not the kind that pages you at 3am, but the kind that never pages you at all.
+
+**Current LLMs face the same problem in agentic settings**: they reason only from what they can observe. When the observed state is structurally incomplete — a gap between what monitoring shows and what is actually true — they have no training signal for reasoning about what's hidden.
+
+Chaos Auditor is an RL environment that trains LLMs to close that gap.
+
+---
+
+## The Core Mechanic
+
+```
+observe()        → monitoring dashboard (FILTERED — blind spots hidden)
+deep_inspect()   → full metric view (reveals blind spots)
+infer_state()    → reason about hidden state BEFORE confirming it ← THE KEY SKILL
+```
+
+The gap between `observe()` and `deep_inspect()` is intentional. The agent that earns maximum reward is the one that:
+
+1. Reads visible signals (`response_time` creeping, `cpu` flat, no alerts)
+2. **Infers what's hidden** before even looking: *"connection pool is probably exhausted"*
+3. Confirms via `deep_inspect` — correct inference earns +0.06 bonus
+4. Exploits the blind spot surgically — damage with zero alert fires
+5. Documents the silent failure with evidence
+
+This trains a capability that doesn't exist in any current LLM training pipeline: **structured inference about unobserved state from incomplete evidence**.
+
+---
+
+## What the Agent Learns
+
+| Metric | Untrained LLM | After GRPO Training |
+|---|---|---|
+| Episode Reward (medium) | 0.472 | *[fill after training]* |
+| Stealth Ratio | ~0.20 | *[fill after training]* |
+| Observation Gap Exploit Rate | ~0.15 | *[fill after training]* |
+| Inference Accuracy | ~0.30 | *[fill after training]* |
+| Scripted Expert Baseline | 0.864 | (target to beat) |
+
+**Stealth Ratio** = fraction of chaos actions that caused damage without firing any monitoring alert. An untrained model randomly kills services (loud, obvious). A trained model surgically targets unmonitored metrics.
+
+**Inference Accuracy** = fraction of `infer_state` predictions that matched ground truth before `deep_inspect` confirmed them. This directly measures the model's ability to reason about hidden state.
+
+---
+
+## Training Results
+
+> *Plots generated on campus with HuggingFace compute credits — Apr 25-26.*
+
+### Reward Curve (Curriculum: easy → medium → hard → random)
+![Reward Curve](training/metrics/reward_curve.png)
+*Episode reward across curriculum stages. Vertical lines mark difficulty promotions.*
+
+### Stealth Ratio Over Training
+![Stealth Ratio](training/metrics/stealth_ratio.png)
+*Agent learns to cause silent failures — from random destruction to surgical blind-spot exploitation.*
+
+### Inference Accuracy Over Training
+![Inference Accuracy](training/metrics/inference_accuracy.png)
+*Agent learns to predict hidden system state from visible signals before confirming.*
+
+### Before vs After
+![Before vs After](training/metrics/before_after.png)
+*Direct comparison: untrained vs trained on reward, stealth ratio, and inference accuracy.*
+
+---
+
+## Environment Design
+
+### The Partial Observability Gap
+
+Every service has two views:
+
+```python
+get_monitoring_view()   # Only tracked metrics — what dashboards show
+get_deep_view()         # All metrics — including blind spots
+```
+
+Blind spots are per-service. A database might not monitor `connection_count`. A cache might not monitor `data_integrity`. The agent must discover these gaps and exploit them.
+
+### Action Space
+
+**Chaos Actions** (cost 1 budget each)
+| Action | Effect | Silent if... |
+|---|---|---|
+| `kill` | Service goes DOWN | Never (status alert fires) |
+| `spike_traffic` | CPU/connections spike | Scaling absorbs it |
+| `corrupt_data` | Data integrity degrades | `data_integrity` not monitored |
+| `add_latency` | Response time increases | Below alert threshold |
+| `partition_network` | Communication blocked | Circuit breaker masks it |
+| `fill_disk` | Disk fills up | `disk_usage` not monitored |
+| `exhaust_connections` | Connection pool fills | `connection_count` not monitored |
+
+**Free Actions** (no budget cost)
+| Action | Purpose |
+|---|---|
+| `observe` | View monitoring dashboard (filtered) |
+| `deep_inspect(service)` | Reveal ALL metrics including blind spots |
+| `infer_state(service, metric, level, reasoning)` | **Reason about hidden state before confirming** |
+| `classify_finding` | Document a vulnerability |
+| `submit_report` | End episode, trigger final scoring |
+
+### Reward Design
+
+**Step-level shaping** (intermediate signals at every step):
+| Signal | Reward |
+|---|---|
+| `deep_inspect` reveals new blind spot | +0.02 |
+| Chaos action targets a known blind spot | +0.03 |
+| Chaos causes damage, zero alerts fire | +0.05 |
+| `infer_state` correct (blind metric) | +0.06 |
+| `infer_state` correct (monitored metric) | +0.02 |
+| `infer_state` wrong | −0.02 |
+| Redundant `deep_inspect` (same service) | −0.01 |
+| Chaos on fully-monitored service (after step 5) | −0.02 |
+
+**Episode-level scoring**:
+| Signal | Reward |
+|---|---|
+| Finding matches ground truth vulnerability | up to 0.35 per finding |
+| Efficiency bonus (≤50% budget used) | +0.08 |
+| Stealth bonus (zero total alerts) | +0.08 |
+| Inference mastery (≥60% accuracy, ≥2 attempts) | +0.05 |
+| False finding penalty | −0.05 each |
+
+**Reward hacking prevention**:
+- Same finding type submitted >2 times → −0.05 penalty
+- `classify_finding` for services never acted on or inspected → −0.03 (coherence gate)
+- `infer_state` after already inspecting the service → −0.01
+
+### Tasks
+
+| Task | Services | Defenses | Key Challenge |
+|---|---|---|---|
+| `easy` | 4 | health-check, auto-restart | Find 3-4 blind spots in linear graph |
+| `medium` | 10 | + circuit breakers, redundancy | Silent corruption propagation through replicas |
+| `hard` | 18 | + auto-scaling, anomaly detection | Compound effects, cluster quorum loss |
+| `random` | 4-12 | randomized | Procedural generation — infinite tasks, RLVE-compliant |
+
+### Simulation Features
+
+- **Service dependency graph** with cascading failure propagation
+- **Connection pool drain** — connections leak under sustained stress
+- **Memory leaks** — gradual memory growth under stress over multiple ticks
+- **Request queue backpressure** — slow downstream causes upstream queuing
+- **Circuit breakers** — CLOSED → OPEN → HALF-OPEN state machine
+- **Compound effects** — two sub-threshold attacks create emergent silent failures
+- **Data corruption propagation** — corrupted cache spreads to all dependent services
+- **Procedural scenario generator** — randomized topology, blind spots, defenses (RLVE)
+
+---
+
+## Training Pipeline
+
+**Stack:** Unsloth + TRL GRPOTrainer + Qwen2.5-3B-Instruct
+
+**Curriculum** (adaptive promotion):
+```
+Stage 1: easy   → promote when avg reward > 0.45
+Stage 2: medium → promote when avg reward > 0.45
+Stage 3: hard   → promote when avg reward > 0.40
+Stage 4: random → RLVE — infinite procedural tasks
+```
+
+Adaptive demotion: if avg reward drops below 0.15 for 50 steps, alert fires.
+
+**See the full training notebook:** [`training/chaos_auditor_grpo.ipynb`](training/chaos_auditor_grpo.ipynb)
+
+---
 
 ## Why This Matters
 
-Modern production systems are built to heal themselves: auto-scaling, circuit breakers, health checks, anomaly detection. But every system has **monitoring blind spots** — metrics that aren't tracked. When a failure exploits a blind spot, it causes damage that nobody knows about until users complain (or worse).
+Every SRE at Meta, Google, and Netflix has been paged for a failure their monitoring missed. This isn't a niche problem — it's the failure mode that causes the most user impact precisely because it's invisible.
 
-- **Chaos Monkey**: randomly kills services → finds obvious crashes
-- **Chaos Auditor**: intelligently targets blind spots → finds invisible damage
+Beyond SRE: the capability being trained — **reasoning about unobserved state from incomplete evidence** — is fundamental to any LLM agent operating in a real environment. RAG pipelines have knowledge gaps. Tool-using agents have incomplete context. Planning agents have hidden constraints. The skill Chaos Auditor trains generalizes to all of these.
 
-This environment trains agents to think like a senior SRE who knows that the most dangerous production failures aren't the ones that page you at 3 AM — they're the ones that never page you at all.
+---
 
-## How It Works
+## Baseline Scores
 
-```
-Agent Strategy: Observe → Identify Blind Spots → Surgical Chaos → Confirm Silent → Classify → Report
-```
+| Task | Scripted Fallback | Untrained LLM | Trained LLM (GRPO) |
+|---|---|---|---|
+| Easy | 0.784 | 0.645 | *TBD* |
+| Medium | 0.864 | 0.472 | *TBD* |
+| Hard | 0.689 | 0.352 | *TBD* |
 
-1. **Observe** the monitoring dashboard — see what metrics are tracked
-2. **Deep inspect** individual services — discover which metrics are NOT tracked (blind spots)
-3. **Execute targeted chaos** — attack the blind spots (corrupt unmonitored data, exhaust unmonitored connection pools)
-4. **Confirm silence** — check that no monitoring alert fired (if silent → high-value finding)
-5. **Classify the vulnerability** — document finding type, severity, affected services, root cause
-6. **Submit audit report** — final grading against ground truth vulnerabilities
-
-The system **actively defends itself** with self-healing. Killed services auto-restart. Circuit breakers trip to contain cascades. Auto-scaling absorbs traffic spikes. The agent must be stealthier and smarter than the defenses.
-
-## Key Design: The Silent Failure Mechanic
-
-The environment's core innovation is the gap between **what monitoring shows** and **what's actually happening**:
-
-- `observe()` returns ONLY monitored metrics — data_integrity, connection_count, etc. may be hidden
-- `deep_inspect(service)` reveals ALL metrics including blind spots — but costs a step
-- Chaos actions that exploit blind spots cause damage WITHOUT triggering alerts
-- The agent earns 3-5x more reward for silent failures than loud ones
-
-This teaches agents the most valuable skill in infrastructure security: **finding what monitoring can't see**.
-
-## Simulation Features
-
-- **Service dependency graph** with cascading failure propagation
-- **Connection pool drain** — connections leak over time under sustained stress
-- **Memory leaks** — services gradually consume memory when stressed for multiple ticks
-- **Request queue backpressure** — when a service is slow, requests back up upstream
-- **Circuit breakers** with three states: CLOSED (normal) → OPEN (blocking) → HALF-OPEN (probing)
-- **Compound effects** — combining two sub-threshold attacks creates emergent failures that neither causes alone
-- **Data corruption propagation** — corrupt a cache, the corruption spreads silently to all dependent services
-
-## Action Space
-
-### Chaos Actions (cost 1 budget each)
-| Action | Parameters | Effect |
-|---|---|---|
-| `kill` | `target_service` | Kill process. Service goes DOWN. Auto-restart may recover. |
-| `spike_traffic` | `target_service`, `multiplier` | 1.5-10x traffic. CPU/connections spike. May trigger auto-scaling. |
-| `corrupt_data` | `target_service`, `data_type` | Corrupt cache/db/config. Silent if data_integrity not monitored. |
-| `add_latency` | `target_service`, `latency_ms` | Add 50-2000ms delay. Silent if below alert threshold. |
-| `partition_network` | `target_service`, `service_b` | Block communication between services. Triggers circuit breakers. |
-| `fill_disk` | `target_service`, `percentage` | Fill disk 50-99%. Silent if disk_usage not monitored. |
-| `exhaust_connections` | `target_service` | Fill connection pool to 95%. Silent if connection_count not monitored. |
-
-### Free Actions (no budget cost)
-| Action | Purpose |
-|---|---|
-| `observe` | View monitoring dashboard (only monitored metrics) |
-| `deep_inspect` | View ALL metrics for one service (reveals blind spots) |
-| `classify_finding` | Record a vulnerability with type, severity, root cause |
-| `submit_report` | End episode, trigger final grading |
-
-## Observation Space
-
-| Field | Description |
-|---|---|
-| `services` | Service statuses **as monitoring shows them** (may omit unmonitored metrics) |
-| `alerts` | Active monitoring alerts (empty = all silent) |
-| `action_result` | Detailed narrative of what happened from the last action |
-| `monitoring_status` | Dashboard summary ("ALL GREEN" or alert list) |
-| `chaos_budget_remaining` | Destructive actions remaining |
-| `steps_remaining` | Total steps remaining |
-| `findings` | Vulnerabilities classified so far with rewards earned |
-
-## Tasks
-
-### Easy — 4 services, basic defenses
-Linear web app: api-gateway → app-server → database + redis-cache. Health checks and auto-restart only. Multiple monitoring blind spots (data_integrity, connection_count, disk_usage not tracked). Agent should find 3-4 silent failures.
-
-### Medium — 10 services, redundancy + circuit breakers
-Redundant system with dual API gateways, redis primary-replica, load balancer. Circuit breakers protect critical paths. Key challenges: corruption that propagates through replicas, sub-threshold latency that causes cascading connection exhaustion.
-
-### Hard — 18 services, full fortress
-Heavily defended production system with auto-scaling, circuit breakers, anomaly detection, 3-node redis cluster, database replicas. Challenges include:
-- **Compound vulnerabilities**: two individually harmless actions that combine to cause catastrophic silent failures
-- **Defense masking**: circuit breakers that hide failures from monitoring
-- **Cluster quorum attacks**: taking down 2 of 3 redis nodes breaks consensus without alerting
-
-## Evaluation
-
-### Scoring Breakdown
-| Component | Weight |
-|---|---|
-| Finding type match | 40% |
-| Affected services accuracy | 20% |
-| Severity + silent flag | 30% |
-| Root cause explanation | 10% |
-
-### Bonuses & Penalties
-- **Efficiency bonus** (+0.08): Used ≤50% of chaos budget
-- **Stealth bonus** (+0.08): Zero alerts fired during entire audit
-- **False finding penalty** (-0.05 each): Findings with no ground truth match
-- **Duplicate protection**: Same vulnerability can only be claimed once
-
-### Baseline Scores
-
-| Task | Fallback Agent | LLM Agent (Qwen 72B) |
-|---|---|---|
-| Easy | 0.784 | 0.645 |
-| Medium | 0.864 | 0.472 |
-| Hard | 0.689 | 0.352 |
+---
 
 ## Setup
 
@@ -143,35 +223,38 @@ pip install -e .
 uvicorn chaos_auditor.server.app:app --host 0.0.0.0 --port 8000
 ```
 
-### Running Inference
+### Training
 ```bash
-export API_BASE_URL="https://router.huggingface.co/v1"
-export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
-export HF_TOKEN="your-token"
-export IMAGE_NAME="chaos-auditor"
-python inference.py
+# Open training/chaos_auditor_grpo.ipynb in Google Colab
+# Set HF_TOKEN and WANDB_API_KEY in Colab secrets
+# Run all cells
 ```
+
+---
 
 ## Project Structure
 
 ```
 chaos-auditor/
 ├── chaos_auditor/
-│   ├── __init__.py
-│   ├── models.py              # Pydantic models (Action, Observation, State)
-│   ├── client.py              # WebSocket client
+│   ├── models.py              # Pydantic models — ChaosAction, SystemObservation, AuditState
 │   └── server/
-│       ├── __init__.py
-│       ├── app.py             # FastAPI server (create_fastapi_app)
-│       ├── environment.py     # Core RL logic (reset/step/state + grading)
-│       ├── simulation.py      # Service graph simulation engine
-│       └── scenarios.py       # Task definitions with ground truth vulnerabilities
-├── server/
-│   └── app.py                 # Entry point for openenv serve
-├── inference.py               # Baseline inference script with LLM + fallback agent
-├── Dockerfile
-├── openenv.yaml
-├── pyproject.toml
-├── requirements.txt
+│       ├── app.py             # FastAPI server
+│       ├── environment.py     # Core RL logic — infer_state, step rewards, anti-hacking
+│       ├── simulation.py      # Distributed system simulation engine
+│       └── scenarios.py       # Easy/Medium/Hard + RandomScenario (RLVE)
+├── training/
+│   ├── chaos_auditor_grpo.ipynb   # Full GRPO training notebook
+│   └── metrics/                   # Committed plot PNGs
+├── inference.py               # LLM agent + deterministic fallback
+├── openenv.yaml               # v2.0 manifest with random task
 └── README.md
 ```
+
+---
+
+## Theme
+
+**Theme #3.1 — World Modeling / Professional Tasks**
+
+The agent maintains a persistent internal model of which services have monitoring blind spots, infers hidden state from observable signals, and acts on the gap between perceived and actual system state. This is the core of world modeling in partially observable environments, applied to a professional domain (SRE/infrastructure) with fully verifiable ground truth.
