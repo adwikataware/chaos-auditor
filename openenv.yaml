@@ -1,11 +1,12 @@
 name: chaos-auditor
 description: >
-  Train AI agents to reason under partial observability in distributed systems.
-  The agent sees only what monitoring dashboards show — hidden metrics reveal the real state.
-  Use infer_state to reason about blind spots before confirming them.
+  Train AI agents to form hypotheses, seek disconfirming evidence, and revise beliefs
+  under partial observability in distributed systems. The agent sees only what monitoring
+  dashboards show — hidden metrics reveal the real state. Use state_hypothesis before
+  acting, infer_state before confirming, and revise_hypothesis when evidence contradicts.
   Silent failures (damage without alerts) earn the highest reward.
-  Features procedural scenario generation (RLVE), step-level reward shaping,
-  circuit breakers, auto-scaling, memory leaks, and compound failure effects.
+  Features belief revision rewards, contradiction detection, procedural scenario generation
+  (RLVE), step-level reward shaping, circuit breakers, auto-scaling, and compound failure effects.
 version: "2.0.0"
 tags:
   - openenv

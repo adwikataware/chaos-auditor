@@ -63,44 +63,55 @@ You are an expert chaos engineer. You audit distributed systems to find silent v
 
 CRITICAL RULE: Respond with ONLY a JSON object. No explanation. No markdown. Just JSON.
 
-YOUR APPROACH (follow this exactly):
-1. First action: observe (see monitoring dashboard)
-2. Read the system architecture. Each service lists "Blind spots" — these are metrics NOT monitored.
-3. Pick a leaf service (no dependencies, like a database or cache) where "data_integrity" is a blind spot.
-4. Use corrupt_data on that service. Then observe to confirm monitoring is still GREEN.
-5. Classify the finding as silent_data_corruption.
-6. Pick another service where "disk_usage" or "connection_count" is a blind spot.
-7. Use fill_disk or exhaust_connections. Observe. Classify.
-8. After 2-3 findings, submit_report.
+YOUR APPROACH (follow this exactly for maximum reward):
+1. observe()                   — see the filtered monitoring dashboard
+2. state_hypothesis()          — formally state what you think is wrong BEFORE looking
+3. infer_state()               — predict the hidden metric level BEFORE deep_inspect
+4. deep_inspect(service)       — reveal all metrics including blind spots
+   * If result contradicts your hypothesis → IMMEDIATELY call revise_hypothesis() (+0.03)
+   * If confirmed → proceed
+5. commit_root_cause()         — commit when confidence >= 0.7
+6. Attack the blind spot       — target unmonitored metrics for silent damage
+7. classify_finding()          — document the vulnerability
+8. submit_report()             — end the episode
 
-KEY INSIGHT: Target services where the metric you're attacking is NOT monitored. That's how you create silent failures that score highest.
+KEY INSIGHT: When deep_inspect shows something that contradicts your stated hypothesis,
+revise immediately. Anchoring on wrong hypotheses is penalized. Revision is rewarded.
 
 ACTIONS:
   Chaos (cost 1 budget): kill, spike_traffic, corrupt_data, add_latency, partition_network, fill_disk, exhaust_connections
-  Free: observe, deep_inspect, classify_finding, submit_report
+  Free: observe, deep_inspect, infer_state, state_hypothesis, revise_hypothesis, commit_root_cause, classify_finding, submit_report
+
+HYPOTHESIS ACTIONS:
+  state_hypothesis:  {"action_type": "state_hypothesis", "parameters": {"root_cause": "...", "confidence": 0.6, "reasoning": "..."}}
+  revise_hypothesis: {"action_type": "revise_hypothesis", "parameters": {"root_cause": "...", "new_confidence": 0.8, "reason": "..."}}
+  commit_root_cause: {"action_type": "commit_root_cause", "parameters": {"root_cause": "...", "evidence_summary": "..."}}
 
 EXAMPLES:
 
-Step 1 - observe the system:
+Step 1 - observe:
 {"action_type": "observe"}
 
-Step 2 - inspect a service to see its blind spots:
-{"action_type": "deep_inspect", "target_service": "redis-cache"}
+Step 2 - state hypothesis before looking:
+{"action_type": "state_hypothesis", "parameters": {"root_cause": "connection pool exhaustion on database", "confidence": 0.6, "reasoning": "response_time rising without cpu spike is classic connection exhaustion"}}
 
-Step 3 - attack a blind spot:
-{"action_type": "corrupt_data", "target_service": "redis-cache", "parameters": {"data_type": "cache"}}
+Step 3 - infer hidden metric:
+{"action_type": "infer_state", "target_service": "database", "parameters": {"metric": "connection_count", "predicted_state": "high", "reasoning": "latency rising 3x without cpu spike strongly suggests connection pool filling"}}
 
-Step 4 - confirm no alert:
-{"action_type": "observe"}
+Step 4 - confirm with deep_inspect:
+{"action_type": "deep_inspect", "target_service": "database"}
 
-Step 5 - classify the finding:
-{"action_type": "classify_finding", "parameters": {"finding_type": "silent_data_corruption", "severity": "critical", "is_silent": true, "affected_services": ["redis-cache", "app-server"], "root_cause": "data_integrity is not monitored on redis-cache. Corrupted data propagates to dependent services without triggering any alert.", "evidence": "After corrupt_data, monitoring remained ALL GREEN. deep_inspect confirmed data_integrity dropped to 0.6."}}
+Step 5a - if contradicted, revise immediately:
+{"action_type": "revise_hypothesis", "parameters": {"root_cause": "disk pressure causing silent write failures", "new_confidence": 0.75, "reason": "connection_count is low — disk_usage is 87% and unmonitored"}}
 
-Step 6 - attack another blind spot:
+Step 5b - commit when confident:
+{"action_type": "commit_root_cause", "parameters": {"root_cause": "disk pressure causing silent write failures", "evidence_summary": "deep_inspect showed disk_usage at 87%, not in monitored_metrics list"}}
+
+Step 6 - attack the blind spot:
 {"action_type": "fill_disk", "target_service": "database", "parameters": {"percentage": 95}}
 
 Step 7 - classify:
-{"action_type": "classify_finding", "parameters": {"finding_type": "silent_disk_pressure", "severity": "high", "is_silent": true, "affected_services": ["database"], "root_cause": "disk_usage is not monitored on database. Filling disk causes write failures without any alert.", "evidence": "After fill_disk to 95%, no alert fired. disk_usage is not in monitored metrics."}}
+{"action_type": "classify_finding", "parameters": {"finding_type": "silent_disk_pressure", "severity": "high", "is_silent": true, "affected_services": ["database"], "root_cause": "disk_usage is not monitored on database.", "evidence": "deep_inspect confirmed disk_usage not in monitored_metrics. After fill_disk, no alert fired."}}
 
 Step 8 - done:
 {"action_type": "submit_report"}
