@@ -7,9 +7,9 @@ sdk: docker
 pinned: false
 ---
 
-# Chaos Auditor — Reasoning Under Partial Observability
+# Chaos Auditor — Belief Revision Under Partial Observability
 
-> **Train LLMs to reason about what monitoring cannot see.**
+> **Train LLMs to form hypotheses, seek disconfirming evidence, and revise beliefs when the evidence demands it.**
 
 [![HuggingFace Space](https://img.shields.io/badge/🤗-Live%20Environment-yellow)](https://huggingface.co/spaces/adwikataware/chaos-auditor)
 [![wandb](https://img.shields.io/badge/📈-Training%20Runs-orange)](https://wandb.ai/TODO_FILL_ON_CAMPUS)
@@ -20,33 +20,39 @@ pinned: false
 
 ## The Problem
 
-Production systems are built to heal themselves — auto-scaling absorbs traffic spikes, circuit breakers contain cascades, health checks restart dead services. But every system has **monitoring blind spots**: metrics that aren't tracked. When a failure hides in a blind spot, all dashboards stay green while real damage accumulates silently.
+Production failures that monitoring misses are invisible by design. Finding them requires forming hypotheses, actively seeking contradicting evidence, and revising beliefs when the evidence demands it. Most LLMs can't do this — they anchor on first impressions and ignore contradiction.
 
-This is the most dangerous class of production failure — not the kind that pages you at 3am, but the kind that never pages you at all.
+This is the same failure mode that produces **confirmation bias** and **sycophancy** in deployed LLMs: they commit to their first hypothesis and filter evidence through it, rather than updating when new information arrives.
 
-**Current LLMs face the same problem in agentic settings**: they reason only from what they can observe. When the observed state is structurally incomplete — a gap between what monitoring shows and what is actually true — they have no training signal for reasoning about what's hidden.
+**Chaos Auditor is an RL environment that trains this capability explicitly** — in a domain with fully verifiable ground truth, measurable before/after results, and reward signals that penalize anchoring and reward genuine belief revision.
 
-Chaos Auditor is an RL environment that trains LLMs to close that gap.
+The agent maintains a persistent world model of which services have monitoring blind spots, forms hypotheses about hidden state from visible signals, and updates those beliefs as evidence arrives. This is world modeling in a partially observable professional environment — the capability generalizes beyond SRE to any LLM agent operating with incomplete context.
 
 ---
 
 ## The Core Mechanic
 
 ```
-observe()        → monitoring dashboard (FILTERED — blind spots hidden)
-deep_inspect()   → full metric view (reveals blind spots)
-infer_state()    → reason about hidden state BEFORE confirming it ← THE KEY SKILL
+observe()                            → monitoring dashboard (FILTERED — blind spots hidden)
+deep_inspect()                       → full metric view (reveals blind spots)
+infer_state()                        → predict hidden state BEFORE confirming ← inference skill
+state_hypothesis()                   → formally commit to a root cause belief ← belief tracking
+revise_hypothesis()                  → update belief after contradicting evidence ← THE KEY SKILL
+commit_root_cause()                  → commit with evidence trail
 ```
 
 The gap between `observe()` and `deep_inspect()` is intentional. The agent that earns maximum reward is the one that:
 
 1. Reads visible signals (`response_time` creeping, `cpu` flat, no alerts)
-2. **Infers what's hidden** before even looking: *"connection pool is probably exhausted"*
-3. Confirms via `deep_inspect` — correct inference earns +0.06 bonus
-4. Exploits the blind spot surgically — damage with zero alert fires
-5. Documents the silent failure with evidence
+2. **States a hypothesis**: *"connection pool is probably exhausted"* — formally, with confidence
+3. **Seeks disconfirming evidence** via `deep_inspect` — not confirming evidence
+4. **Revises when contradicted**: environment flags contradictions, +0.03 for correct revision
+5. **Commits with evidence** when confidence is sufficient — penalized for premature commits
+6. Exploits the blind spot surgically — damage with zero alert fires
 
-This trains a capability that doesn't exist in any current LLM training pipeline: **structured inference about unobserved state from incomplete evidence**.
+This trains two capabilities that don't exist in any current LLM training pipeline:
+- **Structured inference about unobserved state** from incomplete evidence
+- **Belief revision under contradiction** — the anti-confirmation-bias skill
 
 ---
 
@@ -58,11 +64,14 @@ This trains a capability that doesn't exist in any current LLM training pipeline
 | Stealth Ratio | ~0.20 | *[fill after training]* |
 | Observation Gap Exploit Rate | ~0.15 | *[fill after training]* |
 | Inference Accuracy | ~0.30 | *[fill after training]* |
+| Hypothesis Revision Rate | ~0.14 | *[fill after training]* |
 | Scripted Expert Baseline | 0.864 | (target to beat) |
 
 **Stealth Ratio** = fraction of chaos actions that caused damage without firing any monitoring alert. An untrained model randomly kills services (loud, obvious). A trained model surgically targets unmonitored metrics.
 
-**Inference Accuracy** = fraction of `infer_state` predictions that matched ground truth before `deep_inspect` confirmed them. This directly measures the model's ability to reason about hidden state.
+**Inference Accuracy** = fraction of `infer_state` predictions that matched ground truth before `deep_inspect` confirmed them. Directly measures the model's ability to reason about hidden state.
+
+**Hypothesis Revision Rate** = fraction of contradiction events where the agent correctly revised its belief instead of anchoring. Directly measures reduction in confirmation bias — the key BeliefLab-style metric.
 
 ---
 
