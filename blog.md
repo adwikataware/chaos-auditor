@@ -18,14 +18,20 @@ Chaos Auditor is an OpenEnv-compliant RL environment simulating a distributed sy
 
 The gap between what monitoring shows and what is actually true is the core training mechanic.
 
-## The Key Innovation: infer_state
+## The Key Innovation: Belief Revision Under Contradiction
 
-Most RL environments reward agents for acting correctly. Chaos Auditor rewards agents for **reasoning correctly before acting**.
+Most RL environments reward agents for acting correctly. Chaos Auditor rewards agents for **reasoning correctly before acting** — and for **updating beliefs when evidence demands it**.
 
-The agent observes: CPU normal, response time creeping up, no alerts.
-It infers: *"connection pool is probably exhausted — latency pattern without CPU spike suggests this"*
-It confirms via deep_inspect — if the inference was correct, +0.06 bonus reward.
-It exploits the blind spot surgically — damage with zero alerts.
+The full workflow the agent learns:
+
+1. **State a hypothesis** — *"connection pool is probably exhausted"* — formally, with confidence
+2. **Infer before confirming** — predict the hidden metric level before calling `deep_inspect`
+3. **Seek disconfirming evidence** — `deep_inspect` may contradict the hypothesis
+4. **Revise when contradicted** — +0.03 bonus for correct epistemic update, -0.02 for anchoring
+5. **Commit with evidence** — `commit_root_cause` rewards well-evidenced commits, penalizes premature ones
+6. **Exploit the blind spot** — silent damage with zero alerts
+
+The `infer_state` mechanic rewards correct predictions before confirmation (+0.06 for blind spot metrics). The `revise_hypothesis` mechanic rewards updating beliefs after contradiction. Together they train the anti-confirmation-bias capability that no existing LLM training pipeline targets directly.
 
 This trains a capability that doesn't exist in any current LLM training pipeline: structured inference about unobserved state from incomplete evidence.
 
@@ -34,7 +40,7 @@ This trains a capability that doesn't exist in any current LLM training pipeline
 - **Model**: Qwen2.5-3B-Instruct via Unsloth
 - **Algorithm**: GRPO (Group Relative Policy Optimization) via TRL
 - **Curriculum**: easy (4 services) → medium (10 services) → hard (18 services) → random (RLVE, infinite)
-- **Metrics**: Episode reward, Stealth Ratio, Observation Gap Exploit Rate, Inference Accuracy
+- **Metrics**: Episode reward, Stealth Ratio, Observation Gap Exploit Rate, Inference Accuracy, Hypothesis Revision Rate
 
 ## Results
 
@@ -45,8 +51,11 @@ After GRPO curriculum training:
 | Episode Reward (medium) | 0.472 | *see plots* |
 | Stealth Ratio | ~0.20 | *see plots* |
 | Inference Accuracy | ~0.30 | *see plots* |
+| Hypothesis Revision Rate | ~0.14 | *see plots* |
 
 **Stealth Ratio** measures what fraction of chaos actions caused damage without firing any alert. An untrained model randomly kills services. A trained model surgically targets unmonitored metrics.
+
+**Hypothesis Revision Rate** measures how often the agent correctly revised its belief after contradicting evidence — directly quantifying the reduction in confirmation bias.
 
 ## Why It Matters
 
