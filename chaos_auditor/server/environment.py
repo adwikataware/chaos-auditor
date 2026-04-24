@@ -49,7 +49,11 @@ CHAOS_ACTIONS = {
     "kill", "spike_traffic", "corrupt_data", "add_latency",
     "partition_network", "fill_disk", "exhaust_connections",
 }
-FREE_ACTIONS = {"observe", "deep_inspect", "infer_state", "classify_finding", "submit_report"}
+FREE_ACTIONS = {
+    "observe", "deep_inspect", "infer_state",
+    "state_hypothesis", "revise_hypothesis", "commit_root_cause",
+    "classify_finding", "submit_report",
+}
 ALL_ACTIONS = CHAOS_ACTIONS | FREE_ACTIONS
 
 # Metrics that can be inferred
@@ -132,6 +136,14 @@ class ChaosAuditorEnvironment(
         self._infer_correct: int = 0
         self._pending_inferences: Dict[str, Dict[str, str]] = {}  # service+metric -> prediction
 
+        # Hypothesis / belief revision tracking
+        self._active_hypothesis: Optional[Dict[str, Any]] = None   # current stated hypothesis
+        self._hypothesis_history: List[Dict[str, Any]] = []        # all hypotheses stated
+        self._contradiction_events: int = 0                        # times evidence contradicted hypothesis
+        self._revisions_after_contradiction: int = 0               # times agent revised after contradiction
+        self._contradiction_pending: bool = False                  # flag: last inspect contradicted hypothesis
+        self._committed_root_causes: List[Dict[str, Any]] = []    # all commit_root_cause calls
+
     def reset(
         self,
         seed: Optional[int] = None,
@@ -161,6 +173,14 @@ class ChaosAuditorEnvironment(
         self._infer_correct = 0
         self._pending_inferences = {}
 
+        # Reset hypothesis tracking
+        self._active_hypothesis = None
+        self._hypothesis_history = []
+        self._contradiction_events = 0
+        self._revisions_after_contradiction = 0
+        self._contradiction_pending = False
+        self._committed_root_causes = []
+
         self._state = AuditState(
             episode_id=episode_id or str(uuid.uuid4()),
             step_count=0,
@@ -176,6 +196,10 @@ class ChaosAuditorEnvironment(
             infer_attempts=0,
             infer_correct=0,
             infer_accuracy=0.0,
+            hypothesis_revisions=0,
+            premature_commits=0,
+            commits_total=0,
+            revision_rate=0.0,
         )
 
         system_desc = self._graph.get_architecture_description()
@@ -195,7 +219,9 @@ class ChaosAuditorEnvironment(
             f"ACTIONS:\n"
             f"  Chaos (costs 1 budget): kill, spike_traffic, corrupt_data,\n"
             f"    add_latency, partition_network, fill_disk, exhaust_connections\n"
-            f"  Free: observe, deep_inspect, infer_state, classify_finding, submit_report\n\n"
+            f"  Free: observe, deep_inspect, infer_state,\n"
+            f"    state_hypothesis, revise_hypothesis, commit_root_cause,\n"
+            f"    classify_finding, submit_report\n\n"
             f"PARTIAL OBSERVABILITY MECHANIC:\n"
             f"  observe() shows ONLY monitored metrics — blind spots are hidden.\n"
             f"  deep_inspect(service) reveals ALL metrics including blind spots.\n"
@@ -290,6 +316,18 @@ class ChaosAuditorEnvironment(
             )
             reward += step_reward
 
+        elif action_type == "state_hypothesis":
+            step_reward, action_result = self._do_state_hypothesis(action.parameters)
+            reward += step_reward
+
+        elif action_type == "revise_hypothesis":
+            step_reward, action_result = self._do_revise_hypothesis(action.parameters)
+            reward += step_reward
+
+        elif action_type == "commit_root_cause":
+            step_reward, action_result = self._do_commit_root_cause(action.parameters)
+            reward += step_reward
+
         elif action_type == "classify_finding":
             reward, action_result = self._do_classify_finding(action.parameters)
 
@@ -353,6 +391,9 @@ class ChaosAuditorEnvironment(
         self._state.infer_correct = self._infer_correct
         self._state.infer_accuracy = round(
             self._infer_correct / max(self._infer_attempts, 1), 3
+        )
+        self._state.revision_rate = round(
+            self._revisions_after_contradiction / max(self._contradiction_events, 1), 3
         )
 
     # ── Action Handlers ────────────────────────────────────────────
@@ -440,6 +481,25 @@ class ChaosAuditorEnvironment(
             else:
                 reward_msg = f"\n  ✗ Inference incorrect — penalty: {inference_bonus:.2f}"
 
+        # Contradiction detection — check if deep_inspect result contradicts active hypothesis
+        contradiction_msg = ""
+        if self._active_hypothesis:
+            stated_root_cause = self._active_hypothesis.get("root_cause", "").lower()
+            # Check if any blind metric being revealed contradicts the stated root cause
+            # Heuristic: if hypothesis mentions connection/pool but connection_count is low -> contradiction
+            contradiction = self._detect_contradiction(svc, stated_root_cause)
+            if contradiction:
+                self._contradiction_events += 1
+                self._contradiction_pending = True
+                contradiction_msg = (
+                    f"\n\n  ⚠ CONTRADICTION DETECTED: Evidence contradicts your hypothesis.\n"
+                    f"  Stated: '{stated_root_cause[:60]}'\n"
+                    f"  Finding: {contradiction}\n"
+                    f"  Use revise_hypothesis() to update your belief. (+0.03 if you do)"
+                )
+            else:
+                self._contradiction_pending = False
+
         # Reward for discovering new blind spots
         if target not in self._inspected_services:
             new_blind_spots = blind_spots
@@ -455,6 +515,9 @@ class ChaosAuditorEnvironment(
 
         if reward_msg:
             lines.append(reward_msg)
+
+        if contradiction_msg:
+            lines.append(contradiction_msg)
 
         return reward, "\n".join(lines)
 
@@ -627,6 +690,159 @@ class ChaosAuditorEnvironment(
                         reward -= 0.02
 
         return reward
+
+    def _detect_contradiction(self, svc: Any, root_cause: str) -> str:
+        """Return a contradiction description if deep_inspect evidence contradicts root_cause."""
+        cause = root_cause.lower()
+        # connection/pool hypothesis but connections are actually low
+        if any(w in cause for w in ("connection", "pool", "exhaust")):
+            ratio = svc.connection_count / max(svc.max_connections, 1)
+            if ratio < 0.4:
+                return f"connection_count is only {svc.connection_count}/{svc.max_connections} (low — not exhausted)"
+        # disk hypothesis but disk is fine
+        if any(w in cause for w in ("disk", "storage", "space")):
+            if svc.disk_usage < 50:
+                return f"disk_usage is {svc.disk_usage:.1f}% (not a disk issue)"
+        # data corruption hypothesis but integrity is fine
+        if any(w in cause for w in ("corrupt", "integrity", "data")):
+            if svc.data_integrity > 0.95:
+                return f"data_integrity is {svc.data_integrity:.3f} (no corruption detected)"
+        # memory hypothesis but memory is fine
+        if any(w in cause for w in ("memory", "leak", "oom")):
+            if svc.memory_usage < 50:
+                return f"memory_usage is {svc.memory_usage:.1f}% (memory is healthy)"
+        return ""
+
+    def _do_state_hypothesis(self, params: Dict[str, Any]) -> Tuple[float, str]:
+        root_cause = params.get("root_cause", "").strip()
+        confidence = float(params.get("confidence", 0.5))
+        reasoning = params.get("reasoning", "").strip()
+
+        if not root_cause or len(root_cause) < 5:
+            return 0.0, "state_hypothesis requires root_cause (min 5 chars)."
+        if not reasoning or len(reasoning) < 10:
+            return 0.0, "state_hypothesis requires reasoning (min 10 chars)."
+
+        confidence = max(0.0, min(1.0, confidence))
+
+        self._active_hypothesis = {
+            "root_cause": root_cause,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "step": self._steps_taken,
+        }
+        self._hypothesis_history.append(dict(self._active_hypothesis))
+        self._contradiction_pending = False
+
+        return 0.0, (
+            f"┌─────────────────────────────────────────────────────┐\n"
+            f"│  HYPOTHESIS STATED                                    │\n"
+            f"├─────────────────────────────────────────────────────┤\n"
+            f"│  Root cause:  {root_cause[:60]}\n"
+            f"│  Confidence:  {confidence:.0%}\n"
+            f"│  Reasoning:   {reasoning[:80]}\n"
+            f"├─────────────────────────────────────────────────────┤\n"
+            f"│  Use deep_inspect to gather evidence.\n"
+            f"│  If evidence contradicts — use revise_hypothesis().\n"
+            f"│  When confident — use commit_root_cause().\n"
+            f"└─────────────────────────────────────────────────────┘"
+        )
+
+    def _do_revise_hypothesis(self, params: Dict[str, Any]) -> Tuple[float, str]:
+        root_cause = params.get("root_cause", "").strip()
+        new_confidence = float(params.get("new_confidence", 0.5))
+        reason = params.get("reason", "").strip()
+
+        if not root_cause or len(root_cause) < 5:
+            return 0.0, "revise_hypothesis requires root_cause (min 5 chars)."
+        if not reason or len(reason) < 10:
+            return 0.0, "revise_hypothesis requires reason (min 10 chars)."
+
+        new_confidence = max(0.0, min(1.0, new_confidence))
+
+        # Core reward signal: did the agent revise BECAUSE of a contradiction?
+        reward = 0.0
+        revision_msg = ""
+        if self._contradiction_pending:
+            reward = 0.03
+            self._revisions_after_contradiction += 1
+            self._state.hypothesis_revisions += 1
+            revision_msg = "\n  ✓ Revised after contradicting evidence — correct epistemic update: +0.03"
+            self._contradiction_pending = False
+        elif self._active_hypothesis is None:
+            reward = -0.01
+            revision_msg = "\n  No active hypothesis to revise. Use state_hypothesis first. (-0.01)"
+        else:
+            # Revision without contradiction — neutral, allowed
+            revision_msg = "\n  Hypothesis revised (no pending contradiction detected)."
+
+        self._active_hypothesis = {
+            "root_cause": root_cause,
+            "confidence": new_confidence,
+            "reasoning": reason,
+            "step": self._steps_taken,
+            "revised": True,
+        }
+        self._hypothesis_history.append(dict(self._active_hypothesis))
+
+        return reward, (
+            f"┌─────────────────────────────────────────────────────┐\n"
+            f"│  HYPOTHESIS REVISED                                   │\n"
+            f"├─────────────────────────────────────────────────────┤\n"
+            f"│  New root cause:  {root_cause[:55]}\n"
+            f"│  New confidence:  {new_confidence:.0%}\n"
+            f"│  Reason:          {reason[:75]}\n"
+            f"└─────────────────────────────────────────────────────┘"
+            f"{revision_msg}"
+        )
+
+    def _do_commit_root_cause(self, params: Dict[str, Any]) -> Tuple[float, str]:
+        root_cause = params.get("root_cause", "").strip()
+        evidence_summary = params.get("evidence_summary", "").strip()
+
+        if not root_cause or len(root_cause) < 5:
+            return 0.0, "commit_root_cause requires root_cause (min 5 chars)."
+        if not evidence_summary or len(evidence_summary) < 10:
+            return 0.0, "commit_root_cause requires evidence_summary (min 10 chars)."
+
+        self._state.commits_total += 1
+
+        # Penalize committing with low confidence or without inspecting anything
+        reward = 0.0
+        commit_msg = ""
+
+        active_conf = self._active_hypothesis.get("confidence", 0.0) if self._active_hypothesis else 0.0
+        has_evidence = len(self._inspected_services) > 0
+
+        if not has_evidence:
+            reward = -0.03
+            self._state.premature_commits += 1
+            commit_msg = "\n  ✗ Committed without inspecting any service — premature commit. (-0.03)"
+        elif active_conf < 0.5 and self._active_hypothesis is not None:
+            reward = -0.02
+            self._state.premature_commits += 1
+            commit_msg = f"\n  ✗ Committed with low confidence ({active_conf:.0%}) — gather more evidence first. (-0.02)"
+        else:
+            reward = 0.02
+            commit_msg = "\n  ✓ Root cause committed with sufficient evidence. (+0.02)"
+
+        self._committed_root_causes.append({
+            "root_cause": root_cause,
+            "evidence_summary": evidence_summary,
+            "confidence": active_conf,
+            "step": self._steps_taken,
+        })
+
+        return reward, (
+            f"┌─────────────────────────────────────────────────────┐\n"
+            f"│  ROOT CAUSE COMMITTED                                 │\n"
+            f"├─────────────────────────────────────────────────────┤\n"
+            f"│  Root cause:  {root_cause[:60]}\n"
+            f"│  Evidence:    {evidence_summary[:75]}\n"
+            f"│  Confidence:  {active_conf:.0%}\n"
+            f"└─────────────────────────────────────────────────────┘"
+            f"{commit_msg}"
+        )
 
     def _do_classify_finding(self, params: Dict[str, Any]) -> Tuple[float, str]:
         finding_type = params.get("finding_type", "").strip().lower()
@@ -855,6 +1071,9 @@ class ChaosAuditorEnvironment(
             f"│  Stealth Ratio:         {self._state.stealth_ratio:>8.3f}                   │",
             f"│  Obs Gap Exploit Rate:  {self._state.obs_gap_exploit_rate:>8.3f}                   │",
             f"│  Inference Accuracy:    {self._state.infer_accuracy:>8.3f}                   │",
+            f"│  Hypothesis Revisions:  {self._state.hypothesis_revisions:>8d}  ({self._contradiction_events} contradictions) │",
+            f"│  Revision Rate:         {self._state.revision_rate:>8.3f}                   │",
+            f"│  Premature Commits:     {self._state.premature_commits:>8d}                   │",
             "├─────────────────────────────────────────────────────┤",
             f"│  FINAL SCORE:           {score:>8.3f}                   │",
             "└─────────────────────────────────────────────────────┘",

@@ -18,7 +18,9 @@ class ChaosAction(Action):
         description=(
             "Type of action: kill, spike_traffic, corrupt_data, add_latency, "
             "partition_network, fill_disk, exhaust_connections, "
-            "observe, deep_inspect, infer_state, classify_finding, submit_report"
+            "observe, deep_inspect, infer_state, "
+            "state_hypothesis, revise_hypothesis, commit_root_cause, "
+            "classify_finding, submit_report"
         )
     )
     target_service: Optional[str] = Field(
@@ -36,6 +38,9 @@ class ChaosAction(Action):
             "partition_network: {service_b: 'other-service'}, "
             "infer_state: {metric: 'connection_count', predicted_state: 'high', "
             "reasoning: 'response_time rising without CPU spike suggests connection exhaustion'}, "
+            "state_hypothesis: {root_cause: str, confidence: float (0-1), reasoning: str}, "
+            "revise_hypothesis: {root_cause: str, new_confidence: float (0-1), reason: str}, "
+            "commit_root_cause: {root_cause: str, evidence_summary: str}, "
             "classify_finding: {finding_type: str, severity: str, "
             "is_silent: bool, affected_services: list, root_cause: str, evidence: str}"
         ),
@@ -133,3 +138,9 @@ class AuditState(State):
     infer_attempts: int = 0             # total infer_state calls
     infer_correct: int = 0              # correct inferences before deep_inspect
     infer_accuracy: float = 0.0         # infer_correct / infer_attempts
+
+    # Belief revision metrics
+    hypothesis_revisions: int = 0       # times agent revised after contradicting evidence
+    premature_commits: int = 0          # commit_root_cause calls with low evidence
+    commits_total: int = 0              # total commit_root_cause calls
+    revision_rate: float = 0.0          # hypothesis_revisions / contradiction events seen
