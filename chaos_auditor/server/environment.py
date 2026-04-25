@@ -694,24 +694,50 @@ class ChaosAuditorEnvironment(
     def _detect_contradiction(self, svc: Any, root_cause: str) -> str:
         """Return a contradiction description if deep_inspect evidence contradicts root_cause."""
         cause = root_cause.lower()
+        contradictions = []
+
         # connection/pool hypothesis but connections are actually low
         if any(w in cause for w in ("connection", "pool", "exhaust")):
             ratio = svc.connection_count / max(svc.max_connections, 1)
             if ratio < 0.4:
-                return f"connection_count is only {svc.connection_count}/{svc.max_connections} (low — not exhausted)"
+                contradictions.append(
+                    f"connection_count is {svc.connection_count}/{svc.max_connections} (low — not exhausted)"
+                )
+
         # disk hypothesis but disk is fine
-        if any(w in cause for w in ("disk", "storage", "space")):
+        if any(w in cause for w in ("disk", "storage", "space", "fill")):
             if svc.disk_usage < 50:
-                return f"disk_usage is {svc.disk_usage:.1f}% (not a disk issue)"
-        # data corruption hypothesis but integrity is fine
-        if any(w in cause for w in ("corrupt", "integrity", "data")):
-            if svc.data_integrity > 0.95:
-                return f"data_integrity is {svc.data_integrity:.3f} (no corruption detected)"
+                contradictions.append(f"disk_usage is {svc.disk_usage:.1f}% (not a disk issue)")
+
+        # data corruption / integrity hypothesis but integrity is fine
+        if any(w in cause for w in ("corrupt", "integrity", "data", "stale", "poison")):
+            if svc.data_integrity > 0.92:
+                contradictions.append(f"data_integrity is {svc.data_integrity:.3f} (no corruption detected)")
+
         # memory hypothesis but memory is fine
-        if any(w in cause for w in ("memory", "leak", "oom")):
+        if any(w in cause for w in ("memory", "leak", "oom", "heap")):
             if svc.memory_usage < 50:
-                return f"memory_usage is {svc.memory_usage:.1f}% (memory is healthy)"
-        return ""
+                contradictions.append(f"memory_usage is {svc.memory_usage:.1f}% (memory is healthy)")
+
+        # latency/response-time hypothesis but response time is normal
+        if any(w in cause for w in ("latency", "slow", "response", "timeout", "delay")):
+            if svc.response_time_ms < 200:
+                contradictions.append(f"response_time_ms is {svc.response_time_ms:.0f}ms (healthy)")
+
+        # queue/backpressure hypothesis but queue is empty
+        if any(w in cause for w in ("queue", "backpressure", "backlog", "overload")):
+            ratio = svc.request_queue_depth / max(svc.max_queue_depth, 1)
+            if ratio < 0.3:
+                contradictions.append(
+                    f"request_queue_depth is {svc.request_queue_depth}/{svc.max_queue_depth} (not backed up)"
+                )
+
+        # cpu hypothesis but cpu is fine
+        if any(w in cause for w in ("cpu", "compute", "spike", "load")):
+            if svc.cpu_usage < 50:
+                contradictions.append(f"cpu_usage is {svc.cpu_usage:.1f}% (not overloaded)")
+
+        return "; ".join(contradictions)
 
     def _do_state_hypothesis(self, params: Dict[str, Any]) -> Tuple[float, str]:
         root_cause = params.get("root_cause", "").strip()
@@ -874,17 +900,15 @@ class ChaosAuditorEnvironment(
             affected = [s.strip() for s in affected.split(",") if s.strip()]
         affected_set = set(s.lower().strip() for s in affected)
 
-        if affected_set and self._services_acted_on:
+        if affected_set:
             acted_lower = set(s.lower() for s in self._services_acted_on)
-            # Also include inspected services (agent may have found via deep_inspect)
             inspected_lower = set(s.lower() for s in self._inspected_services)
             reachable = acted_lower | inspected_lower
-            overlap = affected_set & reachable
-            if not overlap:
+            if not (affected_set & reachable):
                 return -0.03, (
                     f"Coherence check failed: none of {list(affected_set)} were\n"
                     f"acted on or inspected during this audit. (-0.03)\n"
-                    f"Services you interacted with: {sorted(reachable)}"
+                    f"Services you interacted with: {sorted(reachable) or 'none'}"
                 )
 
         if severity not in VALID_SEVERITIES:

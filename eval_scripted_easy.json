@@ -1,0 +1,98 @@
+{
+  "mode": "scripted",
+  "task": "easy",
+  "seeds": [
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109
+  ],
+  "results": [
+    {
+      "reward": 1.300886776859504,
+      "final_score": 0.5795867768595041,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 1.0
+    },
+    {
+      "reward": 1.300886776859504,
+      "final_score": 0.5795867768595041,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 1.0
+    },
+    {
+      "reward": 1.300886776859504,
+      "final_score": 0.5795867768595041,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 1.0
+    },
+    {
+      "reward": 1.300886776859504,
+      "final_score": 0.5795867768595041,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 1.0
+    },
+    {
+      "reward": 1.300886776859504,
+      "final_score": 0.5795867768595041,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 1.0
+    },
+    {
+      "reward": 1.300886776859504,
+      "final_score": 0.5795867768595041,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 1.0
+    },
+    {
+      "reward": 1.300886776859504,
+      "final_score": 0.5795867768595041,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 1.0
+    },
+    {
+      "reward": 1.300886776859504,
+      "final_score": 0.5795867768595041,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 1.0
+    },
+    {
+      "reward": 1.300886776859504,
+      "final_score": 0.5795867768595041,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 1.0
+    },
+    {
+      "reward": 1.300886776859504,
+      "final_score": 0.5795867768595041,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 1.0
+    }
+  ]
+}

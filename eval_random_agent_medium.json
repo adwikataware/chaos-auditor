@@ -1,0 +1,98 @@
+{
+  "mode": "random_agent",
+  "task": "medium",
+  "seeds": [
+    200,
+    201,
+    202,
+    203,
+    204,
+    205,
+    206,
+    207,
+    208,
+    209
+  ],
+  "results": [
+    {
+      "reward": 0.041,
+      "final_score": 0.001,
+      "stealth_ratio": 0.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 0.0
+    },
+    {
+      "reward": 0.021000000000000005,
+      "final_score": 0.001,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 0.0
+    },
+    {
+      "reward": 0.001,
+      "final_score": 0.001,
+      "stealth_ratio": 0.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 0.0
+    },
+    {
+      "reward": 0.001,
+      "final_score": 0.001,
+      "stealth_ratio": 0.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 0.0
+    },
+    {
+      "reward": 0.311,
+      "final_score": 0.001,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 0.0
+    },
+    {
+      "reward": 0.12100000000000001,
+      "final_score": 0.001,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 0.0
+    },
+    {
+      "reward": 0.001,
+      "final_score": 0.001,
+      "stealth_ratio": 0.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 0.0
+    },
+    {
+      "reward": 0.051000000000000004,
+      "final_score": 0.001,
+      "stealth_ratio": 1.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 0.0
+    },
+    {
+      "reward": 0.001,
+      "final_score": 0.001,
+      "stealth_ratio": 0.0,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 0.0
+    },
+    {
+      "reward": 0.03100000000000001,
+      "final_score": 0.001,
+      "stealth_ratio": 0.167,
+      "infer_accuracy": 0.0,
+      "revision_rate": 0.0,
+      "obs_gap_exploit_rate": 0.0
+    }
+  ]
+}
