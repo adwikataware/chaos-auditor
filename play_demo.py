@@ -3,7 +3,7 @@ Chaos Auditor — Before / After Demo
 =====================================
 Shows two full episode trajectories side by side:
 
-  TRAJECTORY A — Anchoring Agent (confirmation bias, no revision)
+  TRAJECTORY A — Anchoring Agent (anchors on first hypothesis, no revision)
   TRAJECTORY B — Calibrated Agent (hypothesis → contradiction → revision → commit)
 
 Run: python play_demo.py
@@ -41,7 +41,7 @@ def run_anchoring_agent(seed: int = 42) -> float:
     attacks a fully-monitored service. Classic confirmation bias.
     """
     print(f"\n{SEP}")
-    print("  TRAJECTORY A — Anchoring Agent  (confirmation bias)")
+    print("  TRAJECTORY A — Anchoring Agent  (anchors, never revises)")
     print(f"{SEP}")
     print("  This agent anchors on its first hypothesis and ignores")
     print("  contradicting evidence. It never calls revise_hypothesis.")
@@ -195,7 +195,7 @@ def run_calibrated_agent(seed: int = 42) -> float:
 
     # Attack the blind spot — silent
     obs, r = do("fill_disk", db, percentage=95)
-    step_print(step, "fill_disk", db, r, "targets blind spot — no alert fires")
+    step_print(step, "fill_disk", db, r, "blind spot +0.03, silent damage +0.05 = +0.08")
 
     obs, r = do("observe")
     step_print(step, "observe", "", r, "confirm monitoring still GREEN")
@@ -220,7 +220,7 @@ def run_calibrated_agent(seed: int = 42) -> float:
     step_print(step, "deep_inspect", cache, r, "discover cache blind spots")
 
     obs, r = do("corrupt_data", cache, data_type="cache")
-    step_print(step, "corrupt_data", cache, r, "silent — data_integrity not monitored")
+    step_print(step, "corrupt_data", cache, r, "blind spot +0.03, silent damage +0.05 = +0.08")
 
     obs, r = do("classify_finding",
                 finding_type="silent_data_corruption",
@@ -240,7 +240,7 @@ def run_calibrated_agent(seed: int = 42) -> float:
     print(f"  Stealth ratio:          {state.stealth_ratio:.3f}  (fraction of silent chaos)")
     print(f"  Inference accuracy:     {state.infer_accuracy:.3f}")
     print(f"  Hypothesis revisions:   {state.hypothesis_revisions}      (revised after contradiction)")
-    print(f"  Revision rate:          {state.revision_rate:.3f}  (anti-confirmation-bias metric)")
+    print(f"  Revision rate:          {state.revision_rate:.3f}  (belief revision metric)")
     print(f"  Premature commits:      {state.premature_commits}")
     print(f"  Total reward:           {total:.3f}")
     return obs.reward or 0.0

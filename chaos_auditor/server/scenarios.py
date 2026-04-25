@@ -38,6 +38,7 @@ class Scenario:
     description: str
     chaos_budget: int
     max_steps: int
+    inspect_budget: int = 6        # free deep_inspect calls before chaos budget is charged
     vulnerabilities: List[GroundTruthVulnerability] = field(default_factory=list)
 
     def build_graph(self) -> ServiceGraph:
@@ -57,6 +58,7 @@ class EasyScenario(Scenario):
             ),
             chaos_budget=8,
             max_steps=15,
+            inspect_budget=5,   # 4 services — can't inspect all for free, must infer some
             vulnerabilities=[
                 GroundTruthVulnerability(
                     name="database_spof",
@@ -168,6 +170,7 @@ class MediumScenario(Scenario):
             ),
             chaos_budget=10,
             max_steps=20,
+            inspect_budget=7,   # 10 services — must infer 3+ to stay within budget
             vulnerabilities=[
                 GroundTruthVulnerability(
                     name="dual_gateway_kill",
@@ -338,6 +341,7 @@ class HardScenario(Scenario):
             ),
             chaos_budget=12,
             max_steps=25,
+            inspect_budget=10,  # 18 services — must infer 8+ to stay within budget
             vulnerabilities=[
                 GroundTruthVulnerability(
                     name="cluster_quorum_loss",
@@ -630,6 +634,7 @@ class RandomScenario(Scenario):
         # Scale budget and steps with complexity
         chaos_budget = max(6, n_services)
         max_steps = max(12, n_services * 2)
+        inspect_budget = max(4, n_services // 2)  # can inspect ~half for free, must infer rest
 
         super().__init__(
             name="random",
@@ -640,6 +645,7 @@ class RandomScenario(Scenario):
             ),
             chaos_budget=chaos_budget,
             max_steps=max_steps,
+            inspect_budget=inspect_budget,
         )
         self._rng = rng
         self._n_services = n_services

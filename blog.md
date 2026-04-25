@@ -31,7 +31,7 @@ The full workflow the agent learns:
 5. **Commit with evidence** — `commit_root_cause` rewards well-evidenced commits, penalizes premature ones
 6. **Exploit the blind spot** — silent damage with zero alerts
 
-The `infer_state` mechanic rewards correct predictions before confirmation (+0.06 for blind spot metrics). The `revise_hypothesis` mechanic rewards updating beliefs after contradiction. Together they train the anti-confirmation-bias capability that no existing LLM training pipeline targets directly.
+The `infer_state` mechanic rewards correct predictions before confirmation (+0.06 for blind spot metrics). The `revise_hypothesis` mechanic rewards updating beliefs after contradiction. Together they train the belief revision capability that no existing LLM training pipeline targets directly.
 
 This trains a capability that doesn't exist in any current LLM training pipeline: structured inference about unobserved state from incomplete evidence.
 
@@ -55,7 +55,7 @@ After GRPO curriculum training:
 
 **Stealth Ratio** measures what fraction of chaos actions caused damage without firing any alert. An untrained model randomly kills services. A trained model surgically targets unmonitored metrics.
 
-**Hypothesis Revision Rate** measures how often the agent correctly revised its belief after contradicting evidence — directly quantifying the reduction in confirmation bias.
+**Hypothesis Revision Rate** measures how often the agent correctly revised its belief after contradicting evidence — directly quantifying the belief revision capability.
 
 ## Why It Matters
 

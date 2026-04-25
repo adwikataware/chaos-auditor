@@ -107,6 +107,10 @@ class SystemObservation(Observation):
         default=0,
         description="Number of chaos actions remaining",
     )
+    inspect_budget_remaining: int = Field(
+        default=0,
+        description="Number of free deep_inspect calls remaining before chaos budget is charged",
+    )
     steps_remaining: int = Field(
         default=0,
         description="Steps remaining in this episode",
@@ -144,3 +148,7 @@ class AuditState(State):
     premature_commits: int = 0          # commit_root_cause calls with low evidence
     commits_total: int = 0              # total commit_root_cause calls
     revision_rate: float = 0.0          # hypothesis_revisions / contradiction events seen
+
+    # Inspect budget
+    inspect_budget_used: int = 0        # deep_inspect calls made
+    inspect_budget_max: int = 0         # free inspections allowed before chaos budget charged

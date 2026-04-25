@@ -135,6 +135,8 @@ class ChaosAuditorEnvironment(
         self._infer_attempts: int = 0
         self._infer_correct: int = 0
         self._pending_inferences: Dict[str, Dict[str, str]] = {}  # service+metric -> prediction
+        self._inspect_budget: int = 0        # free inspections remaining
+        self._inspect_budget_max: int = 0
 
         # Hypothesis / belief revision tracking
         self._active_hypothesis: Optional[Dict[str, Any]] = None   # current stated hypothesis
@@ -160,6 +162,8 @@ class ChaosAuditorEnvironment(
         self._chaos_budget = self._scenario.chaos_budget
         self._max_steps = self._scenario.max_steps
         self._steps_taken = 0
+        self._inspect_budget = self._scenario.inspect_budget
+        self._inspect_budget_max = self._scenario.inspect_budget
 
         # Reset tracking state
         self._inspected_services = set()
@@ -200,6 +204,8 @@ class ChaosAuditorEnvironment(
             premature_commits=0,
             commits_total=0,
             revision_rate=0.0,
+            inspect_budget_used=0,
+            inspect_budget_max=self._inspect_budget_max,
         )
 
         system_desc = self._graph.get_architecture_description()
@@ -212,6 +218,8 @@ class ChaosAuditorEnvironment(
             f"{self._scenario.description}\n\n"
             f"Resources:\n"
             f"  Chaos budget: {self._chaos_budget} destructive actions\n"
+            f"  Inspect budget: {self._inspect_budget} free deep_inspect calls "
+            f"(additional inspections charge chaos budget)\n"
             f"  Max steps: {self._max_steps} total actions\n\n"
             f"{system_desc}\n"
             f"OBJECTIVE: Find critical vulnerabilities with minimal chaos.\n"
@@ -244,6 +252,7 @@ class ChaosAuditorEnvironment(
             system_description=intro,
             monitoring_status="ALL GREEN — No active alerts. All services nominal.",
             chaos_budget_remaining=self._chaos_budget,
+            inspect_budget_remaining=self._inspect_budget,
             steps_remaining=self._max_steps,
             findings=[],
             task_name=task_name,
@@ -434,6 +443,26 @@ class ChaosAuditorEnvironment(
             services = ", ".join(sorted(self._graph.services.keys()))
             return 0.0, f"Service '{target}' not found. Available: {services}"
 
+        # Enforce inspect budget — free up to limit, then charges chaos budget
+        budget_note = ""
+        if self._inspect_budget > 0:
+            self._inspect_budget -= 1
+            self._state.inspect_budget_used += 1
+            budget_note = f"\n  [Inspect budget: {self._inspect_budget} free inspections remaining]"
+        elif self._chaos_budget > 0:
+            self._chaos_budget -= 1
+            self._state.chaos_budget_used += 1
+            self._state.inspect_budget_used += 1
+            budget_note = (
+                f"\n  ⚠ Inspect budget exhausted — charged 1 chaos budget "
+                f"({self._chaos_budget} remaining)"
+            )
+        else:
+            return 0.0, (
+                "Cannot deep_inspect: both inspect budget and chaos budget are exhausted.\n"
+                "Use observe, infer_state, classify_finding, or submit_report."
+            )
+
         view = svc.get_deep_view()
         lines = [
             f"┌─────────────────────────────────────────────────────┐",
@@ -512,6 +541,9 @@ class ChaosAuditorEnvironment(
             # Penalize redundant inspection
             reward -= 0.01
             reward_msg += f"\n  Already inspected {target} — redundant: -0.01"
+
+        if budget_note:
+            lines.append(budget_note)
 
         if reward_msg:
             lines.append(reward_msg)
@@ -1123,6 +1155,7 @@ class ChaosAuditorEnvironment(
                 self._graph.get_monitoring_status() if self._graph else ""
             ),
             chaos_budget_remaining=self._chaos_budget,
+            inspect_budget_remaining=self._inspect_budget,
             steps_remaining=self._max_steps - self._steps_taken,
             findings=[
                 {

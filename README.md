@@ -22,7 +22,7 @@ pinned: false
 
 Production failures that monitoring misses are invisible by design. Finding them requires forming hypotheses, actively seeking contradicting evidence, and revising beliefs when the evidence demands it. Most LLMs can't do this — they anchor on first impressions and ignore contradiction.
 
-This is the same failure mode that produces **confirmation bias** and **sycophancy** in deployed LLMs: they commit to their first hypothesis and filter evidence through it, rather than updating when new information arrives.
+This is the same failure mode seen in deployed LLM agents: they commit to their first hypothesis and filter evidence through it, rather than updating when new information arrives. **Belief revision under contradiction** is a capability no current training pipeline explicitly targets.
 
 **Chaos Auditor is an RL environment that trains this capability explicitly** — in a domain with fully verifiable ground truth, measurable before/after results, and reward signals that penalize anchoring and reward genuine belief revision.
 
@@ -52,7 +52,7 @@ The gap between `observe()` and `deep_inspect()` is intentional. The agent that 
 
 This trains two capabilities that don't exist in any current LLM training pipeline:
 - **Structured inference about unobserved state** from incomplete evidence
-- **Belief revision under contradiction** — the anti-confirmation-bias skill
+- **Belief revision under contradiction** — updating beliefs when evidence demands it
 
 ---
 
@@ -73,7 +73,7 @@ This trains two capabilities that don't exist in any current LLM training pipeli
 
 **Inference Accuracy** = fraction of `infer_state` predictions that matched ground truth before `deep_inspect` confirmed them. Directly measures the model's ability to reason about hidden state.
 
-**Hypothesis Revision Rate** = fraction of contradiction events where the agent correctly revised its belief instead of anchoring. Directly measures reduction in confirmation bias — the key metric.
+**Hypothesis Revision Rate** = fraction of contradiction events where the agent correctly revised its belief instead of anchoring. Directly measures the belief revision capability — the key metric.
 
 ---
 
