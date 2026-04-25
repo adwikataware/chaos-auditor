@@ -58,20 +58,22 @@ This trains two capabilities that don't exist in any current LLM training pipeli
 
 ## What the Agent Learns
 
-| Metric | Untrained LLM | After GRPO Training |
-|---|---|---|
-| Episode Reward (medium) | 0.472 | *[fill after training]* |
-| Stealth Ratio | ~0.20 | *[fill after training]* |
-| Observation Gap Exploit Rate | ~0.15 | *[fill after training]* |
-| Inference Accuracy | ~0.30 | *[fill after training]* |
-| Hypothesis Revision Rate | ~0.14 | *[fill after training]* |
-| Scripted Expert Baseline | 0.864 | (target to beat) |
+| Metric | Random Agent | Scripted Fallback | After GRPO Training |
+|---|---|---|---|
+| Episode Reward (easy) | 0.042 | 0.580 | *[fill after training]* |
+| Episode Reward (medium) | 0.001 | 0.437 | *[fill after training]* |
+| Stealth Ratio | ~0.52 | 1.000 | *[fill after training]* |
+| Observation Gap Exploit Rate | ~0.07 | 1.000 | *[fill after training]* |
+| Inference Accuracy | 0.000 | 0.000 | *[fill after training]* |
+| Hypothesis Revision Rate | 0.000 | 0.000 | *[fill after training]* |
+
+*Baselines measured on 10 held-out seeds per task. Scripted fallback uses no LLM — hardcoded action sequences targeting known blind spots.*
 
 **Stealth Ratio** = fraction of chaos actions that caused damage without firing any monitoring alert. An untrained model randomly kills services (loud, obvious). A trained model surgically targets unmonitored metrics.
 
 **Inference Accuracy** = fraction of `infer_state` predictions that matched ground truth before `deep_inspect` confirmed them. Directly measures the model's ability to reason about hidden state.
 
-**Hypothesis Revision Rate** = fraction of contradiction events where the agent correctly revised its belief instead of anchoring. Directly measures reduction in confirmation bias — the key BeliefLab-style metric.
+**Hypothesis Revision Rate** = fraction of contradiction events where the agent correctly revised its belief instead of anchoring. Directly measures reduction in confirmation bias — the key metric.
 
 ---
 
@@ -129,6 +131,9 @@ Blind spots are per-service. A database might not monitor `connection_count`. A 
 | `observe` | View monitoring dashboard (filtered) |
 | `deep_inspect(service)` | Reveal ALL metrics including blind spots |
 | `infer_state(service, metric, level, reasoning)` | **Reason about hidden state before confirming** |
+| `state_hypothesis(root_cause, confidence, reasoning)` | Formally commit to a belief |
+| `revise_hypothesis(root_cause, new_confidence, reason)` | Update belief after contradiction — **+0.03 reward** |
+| `commit_root_cause(root_cause, evidence_summary)` | Commit with evidence trail |
 | `classify_finding` | Document a vulnerability |
 | `submit_report` | End episode, trigger final scoring |
 
@@ -143,6 +148,9 @@ Blind spots are per-service. A database might not monitor `connection_count`. A 
 | `infer_state` correct (blind metric) | +0.06 |
 | `infer_state` correct (monitored metric) | +0.02 |
 | `infer_state` wrong | −0.02 |
+| `revise_hypothesis` after contradiction | +0.03 |
+| `commit_root_cause` with evidence | +0.02 |
+| Premature commit (low confidence) | −0.02 to −0.03 |
 | Redundant `deep_inspect` (same service) | −0.01 |
 | Chaos on fully-monitored service (after step 5) | −0.02 |
 
@@ -164,10 +172,10 @@ Blind spots are per-service. A database might not monitor `connection_count`. A 
 
 | Task | Services | Defenses | Key Challenge |
 |---|---|---|---|
-| `easy` | 4 | health-check, auto-restart | Find 3-4 blind spots in linear graph |
+| `easy` | 4 | health-check, auto-restart | Find 4 blind spots in linear graph |
 | `medium` | 10 | + circuit breakers, redundancy | Silent corruption propagation through replicas |
 | `hard` | 18 | + auto-scaling, anomaly detection | Compound effects, cluster quorum loss |
-| `random` | 4-12 | randomized | Procedural generation — infinite tasks, RLVE-compliant |
+| `random` | 4–12 | randomized | Procedural generation — infinite tasks, RLVE-compliant |
 
 ### Simulation Features
 
@@ -184,17 +192,24 @@ Blind spots are per-service. A database might not monitor `connection_count`. A 
 
 ## Training Pipeline
 
-**Stack:** Unsloth + TRL GRPOTrainer + Qwen2.5-3B-Instruct
+**Stack:** Unsloth + TRL SFTTrainer + GRPOTrainer + Qwen2.5-3B-Instruct
 
-**Curriculum** (adaptive promotion):
+**Two-phase training**:
 ```
-Stage 1: easy   → promote when avg reward > 0.45
-Stage 2: medium → promote when avg reward > 0.45
-Stage 3: hard   → promote when avg reward > 0.40
-Stage 4: random → RLVE — infinite procedural tasks
+Phase 1 — SFT warmup (2 epochs)
+  Generate ~250 demonstrations from scripted fallback agent (4 plan variants)
+  Teach action format and belief-revision workflow before GRPO starts
+
+Phase 2 — GRPO curriculum
+  Stage 1: easy   → promote when avg reward > 0.45
+  Stage 2: medium → promote when avg reward > 0.45
+  Stage 3: hard   → promote when avg reward > 0.40
+  Stage 4: random → RLVE — infinite procedural tasks
 ```
 
-Adaptive demotion: if avg reward drops below 0.15 for 50 steps, alert fires.
+GRPO reward function runs **full multi-step episodes** — not single actions. This is critical: belief-revision actions (`state_hypothesis`, `revise_hypothesis`) return 0.0 reward on step 1 but enable +0.03–+0.08 downstream. Single-step scoring would teach the model to ignore them.
+
+Adaptive demotion: if avg reward drops below 0.15 for a stage, alert fires.
 
 **See the full training notebook:** [`training/chaos_auditor_grpo.ipynb`](training/chaos_auditor_grpo.ipynb)
 
@@ -210,11 +225,13 @@ Beyond SRE: the capability being trained — **reasoning about unobserved state 
 
 ## Baseline Scores
 
-| Task | Scripted Fallback | Untrained LLM | Trained LLM (GRPO) |
+*Measured on 10 held-out seeds per task using `eval_harness.py`.*
+
+| Task | Random Agent | Scripted Fallback | Trained LLM (GRPO) |
 |---|---|---|---|
-| Easy | 0.784 | 0.645 | *TBD* |
-| Medium | 0.864 | 0.472 | *TBD* |
-| Hard | 0.689 | 0.352 | *TBD* |
+| Easy | 0.042 | 0.580 | *TBD* |
+| Medium | 0.001 | 0.437 | *TBD* |
+| Hard | — | 0.249 | *TBD* |
 
 ---
 
@@ -232,11 +249,23 @@ pip install -e .
 uvicorn chaos_auditor.server.app:app --host 0.0.0.0 --port 8000
 ```
 
+### Pre-flight (run before training)
+```bash
+python preflight.py   # 18 checks — validates env, all actions, contradiction detection
+```
+
+### Eval Harness
+```bash
+python eval_harness.py --mode scripted        # scripted fallback baseline
+python eval_harness.py --mode random_agent    # random action baseline
+python eval_harness.py --mode llm --model-path ./chaos-auditor-trained
+```
+
 ### Training
 ```bash
 # Open training/chaos_auditor_grpo.ipynb in Google Colab
 # Set HF_TOKEN and WANDB_API_KEY in Colab secrets
-# Run all cells
+# Run all cells (Cell 4b = SFT warmup, Cell 10+ = GRPO curriculum)
 ```
 
 ---
@@ -249,14 +278,17 @@ chaos-auditor/
 │   ├── models.py              # Pydantic models — ChaosAction, SystemObservation, AuditState
 │   └── server/
 │       ├── app.py             # FastAPI server
-│       ├── environment.py     # Core RL logic — infer_state, step rewards, anti-hacking
+│       ├── environment.py     # Core RL logic — rewards, contradiction detection, anti-hacking
 │       ├── simulation.py      # Distributed system simulation engine
 │       └── scenarios.py       # Easy/Medium/Hard + RandomScenario (RLVE)
 ├── training/
-│   ├── chaos_auditor_grpo.ipynb   # Full GRPO training notebook
+│   ├── chaos_auditor_grpo.ipynb   # Full SFT + GRPO training notebook
 │   └── metrics/                   # Committed plot PNGs
 ├── inference.py               # LLM agent + deterministic fallback
-├── openenv.yaml               # v2.0 manifest with random task
+├── play_demo.py               # Before/after trajectory comparison (no GPU needed)
+├── preflight.py               # Pre-training validation — run before compute
+├── eval_harness.py            # Reproducible eval with held-out seeds
+├── openenv.yaml               # v2.0 manifest
 └── README.md
 ```
 
