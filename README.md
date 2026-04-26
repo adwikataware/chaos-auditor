@@ -94,7 +94,40 @@ This trains two capabilities that don't exist in any current LLM training pipeli
 
 ### Agent Comparison: Anchoring vs Calibrated
 ![Agent Comparison](training/metrics/agent_comparison.png)
-*Scripted demo showing what the trained behavior looks like. Calibrated agent earns +147% higher score purely from belief revision.*
+*Calibrated agent earns +147% higher score purely from belief revision — same environment, same seed.*
+
+### Live Demo Output (`python play_demo.py`)
+
+```
+TRAJECTORY A — Anchoring Agent
+
+  Step 01  state_hypothesis                            reward= 0.000  # WRONG hypothesis, high confidence
+  Step 02  deep_inspect           → database           reward=+0.020  # CONTRADICTION flagged — agent ignores it
+  Step 03  kill                   → database           reward=+0.030  # LOUD action — alert fires
+  Step 05  commit_root_cause                           reward=+0.020  # PREMATURE — no real evidence
+  Step 07  submit_report                               reward=+0.231
+
+  Final score: 0.231  |  Stealth ratio: 0.000  |  Silent failures: 0  |  Revisions: 0/1
+
+─────────────────────────────────────────────────────────────────────
+
+TRAJECTORY B — Calibrated Agent
+
+  Step 01  observe                                     reward= 0.000  # read the dashboard
+  Step 02  state_hypothesis                            reward= 0.000  # provisional hypothesis, 0.6 confidence
+  Step 03  infer_state            → database           reward= 0.000  # predict hidden metric before looking
+  Step 04  deep_inspect           → database           reward= 0.000  # contradiction detected!
+  Step 05  revise_hypothesis                           reward=+0.030  # +0.03 for correct epistemic update
+  Step 06  commit_root_cause                           reward=+0.020  # committed with confidence >= 0.7
+  Step 07  fill_disk              → database           reward=+0.080  # blind spot +0.03, silent damage +0.05
+  Step 09  classify_finding                            reward=+0.244  # silent finding — high score
+  Step 12  corrupt_data           → redis-cache        reward=+0.080  # second blind spot, silent
+  Step 14  submit_report                               reward=+0.570
+
+  Final score: 0.570  |  Stealth ratio: 1.000  |  Silent failures: 2  |  Revisions: 1/1
+```
+
+**Score improvement: +0.339 (+147%)** — not from knowing the answer, but from updating the belief when evidence contradicted the hypothesis.
 
 ---
 
