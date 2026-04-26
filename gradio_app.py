@@ -86,21 +86,18 @@ COMPANY_PERSONAS = [
     {
         "name": "PayFlow Inc.",
         "domain": "Fintech / Payment Processing",
-        "tagline": "Processing $2.4M transactions/minute",
         "color": "#00bcd4",
         "incident": "Disk exhaustion on the payments database is silently failing every write. No alert has fired.",
     },
     {
         "name": "ShopRush",
         "domain": "E-Commerce / Order Management",
-        "tagline": "12,000 active checkout sessions",
         "color": "#ff9800",
         "incident": "Corrupted product cache is serving wrong prices to 12,000 active checkouts. Revenue leaking silently.",
     },
     {
         "name": "SocialPulse",
         "domain": "Social Platform / Content Delivery",
-        "tagline": "4.2M concurrent users online",
         "color": "#ce93d8",
         "incident": "Feed cache disk is filling silently. Stale content served to 4.2M users. No monitoring covers this.",
     },
@@ -301,7 +298,7 @@ def make_left_panel(reveal: bool) -> str:
         padding:14px 16px; font-family:'IBM Plex Mono',monospace;">
         <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
             <span style="color:#8b949e; font-size:10px; letter-spacing:2px">LIVE SCORE</span>
-            <span style="color:{s_color}; font-size:10px">{p['tagline']}</span>
+            <span style="color:{s_color}; font-size:10px">task=easy · seed=42</span>
         </div>
         <div style="color:{s_color}; font-size:2.2em; font-weight:bold; text-align:center; margin-bottom:8px">{score:.4f}</div>
         <div style="background:#1a1a2e; border-radius:4px; height:5px; overflow:hidden; margin-bottom:10px;">
@@ -410,7 +407,7 @@ def make_field_report(reveal: bool) -> str:
                 <span style="color:#555; margin:0 8px">|</span>
                 <span style="color:#8b949e; font-size:12px">{p['domain']}</span>
             </div>
-            <span style="color:#ffd700; font-size:11px; font-weight:bold">⚠ {p['tagline']}</span>
+            <span style="color:#ffd700; font-size:11px; font-weight:bold">⚠ scenario: easy · seed 42</span>
         </div>
         <div style="color:#ff444488; font-size:11px; margin-top:6px; font-style:italic">{p['incident']}</div>
     </div>""")
