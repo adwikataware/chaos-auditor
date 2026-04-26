@@ -180,31 +180,30 @@ def make_noc_chart(reveal: bool):
     services = _state["monitoring_view"]
 
     if not services:
-        fig, ax = plt.subplots(figsize=(7, 3))
+        fig, ax = plt.subplots(figsize=(9, 3.2))
         fig.patch.set_facecolor("#0a0a0f")
         ax.set_facecolor("#0a0a0f")
         ax.text(0.5, 0.5, "⏳ Waiting for agent...", ha="center", va="center",
                 color="#00ff88", fontsize=14, fontweight="bold")
         ax.axis("off")
+        plt.tight_layout()
         return fig
 
     names = list(services.keys())
     n = len(names)
-    fig, axes = plt.subplots(1, 3, figsize=(11, max(2.5, n * 0.55 + 1.2)))
+    row_h = 0.52
+    fig_h = max(3.0, n * row_h + 1.0)
+    fig, axes = plt.subplots(1, 3, figsize=(9, fig_h))
     fig.patch.set_facecolor("#0a0a0f")
 
-    if reveal:
-        title = f"⚠  TRUTH — ACTUAL SYSTEM STATE"
-        tc = "#ff4444"
-    else:
-        title = f"✅  MONITORING DASHBOARD — ALL SYSTEMS OPERATIONAL"
-        tc = "#00ff88"
-    fig.suptitle(title, color=tc, fontsize=10, fontweight="bold", y=1.03)
+    title_color = "#ff4444" if reveal else "#00ff88"
+    title_text  = "⚠  TRUTH — ACTUAL SYSTEM STATE" if reveal else "✅  MONITORING DASHBOARD — ALL SYSTEMS OPERATIONAL"
+    fig.suptitle(title_text, color=title_color, fontsize=9, fontweight="bold", y=1.01)
 
     metrics = [
-        ("CPU %",       [services[nm].get("cpu_usage", 0) for nm in names]),
-        ("Memory %",    [services[nm].get("memory_usage", 0) for nm in names]),
-        ("Error Rate %",[services[nm].get("error_rate", 0) * 100 for nm in names]),
+        ("CPU %",        [services[nm].get("cpu_usage",  0)       for nm in names]),
+        ("Memory %",     [services[nm].get("memory_usage", 0)     for nm in names]),
+        ("Error Rate %", [services[nm].get("error_rate",  0) * 100 for nm in names]),
     ]
 
     for ax, (label, values) in zip(axes, metrics):
@@ -215,17 +214,18 @@ def make_noc_chart(reveal: bool):
             colors = ["#00ff88"] * len(values)
             values = [min(v, 42) + random.uniform(-2, 2) for v in values]
 
-        bars = ax.barh(names, values, color=colors, height=0.5, edgecolor="#1a1a2e")
-        ax.set_xlim(0, 100)
-        ax.set_title(label, color="#8b949e", fontsize=8, pad=3)
-        ax.tick_params(colors="#8b949e", labelsize=7)
+        bars = ax.barh(names, values, color=colors, height=0.55, edgecolor="#0a0a0f")
+        ax.set_xlim(0, 105)
+        ax.set_title(label, color="#8b949e", fontsize=8, pad=4)
+        ax.tick_params(colors="#8b949e", labelsize=7.5)
+        ax.set_xlabel("", labelpad=0)
         for spine in ax.spines.values():
             spine.set_edgecolor("#21262d")
         for bar, val in zip(bars, values):
-            ax.text(min(val + 1, 91), bar.get_y() + bar.get_height() / 2,
-                    f"{val:.0f}", va="center", color="white", fontsize=6.5)
+            ax.text(val + 1.5, bar.get_y() + bar.get_height() / 2,
+                    f"{val:.0f}", va="center", color="white", fontsize=8, fontweight="bold")
 
-    plt.tight_layout()
+    plt.subplots_adjust(left=0.18, right=0.97, top=0.88, bottom=0.08, wspace=0.35)
     return fig
 
 # ── Agent field report — living document ─────────────────────────────
@@ -552,39 +552,69 @@ def make_field_report(reveal: bool) -> str:
         {''.join(sections)}
     </div>"""
 
-# ── Score gauge ───────────────────────────────────────────────────────
-def make_score_gauge():
+# ── Score card HTML (replaces polar gauge — no wasted whitespace) ─────
+def make_score_html() -> str:
     score = _state["score"]
-    step = _state["step"]
-    fig, ax = plt.subplots(figsize=(4, 2.5), subplot_kw={"projection": "polar"})
-    fig.patch.set_facecolor("#0a0a0f")
-    ax.set_facecolor("#0a0a0f")
+    step  = _state["step"]
+    done  = _state["episode_done"]
+    running = _state["running"]
 
-    theta = np.linspace(0, np.pi, 100)
-    ax.plot(theta, [1]*100, color="#1a1a2e", linewidth=18, solid_capstyle="round")
-    fill = min(score * 4, 1.0)
-    if fill > 0:
-        color = "#00ff88" if fill > 0.5 else "#ffa500" if fill > 0.2 else "#ff4444"
-        ax.plot(np.linspace(0, np.pi * fill, 100), [1]*100, color=color, linewidth=18, solid_capstyle="round")
+    if not running and not done and step == 0:
+        return """<div style="
+            background:#0d1117; border:1px solid #21262d; border-radius:8px;
+            padding:16px; font-family:monospace; text-align:center; color:#444;
+        ">Score will appear here</div>"""
 
-    ax.text(0, -0.05, f"{score:.3f}", ha="center", va="center", color="white",
-            fontsize=18, fontweight="bold", transform=ax.transData)
-    ax.text(0, -0.38, f"Score  ·  Step {step}", ha="center", va="center",
-            color="#8b949e", fontsize=8, transform=ax.transData)
-    ax.set_ylim(0, 1.5)
-    ax.set_theta_offset(np.pi)
-    ax.set_theta_direction(-1)
-    ax.set_xlim(0, np.pi)
-    ax.axis("off")
-    plt.tight_layout()
-    return fig
+    bar_w  = min(int(score * 400), 100)
+    s_color = "#00ff88" if score > 0.15 else "#ffa500" if score > 0.05 else "#4fc3f7"
+    status = "✓ COMPLETE" if done else f"● Step {step}/13"
+    status_color = "#ffd700" if done else "#00ff88"
+
+    damage = _state["hidden_damage"]
+    silent = sum(1 for d in damage if d["silent"])
+    total  = len(damage)
+
+    rows = ""
+    for d in damage[-6:]:
+        sc = "#00ff88" if d["silent"] else "#ff4444"
+        lb = "🔇 SILENT" if d["silent"] else "🔊 LOUD"
+        rows += f"""<div style="display:flex; justify-content:space-between; padding:3px 0;
+            border-bottom:1px solid #161b22; font-size:11px;">
+            <span style="color:#8b949e">{d['action']} → <span style="color:#ce93d8">{d['target']}</span></span>
+            <span style="color:{sc}; font-weight:bold">{lb}</span>
+        </div>"""
+
+    damage_section = f"""
+    <div style="margin-top:10px; border-top:1px solid #21262d; padding-top:10px;">
+        <div style="color:#8b949e; font-size:10px; letter-spacing:2px; margin-bottom:6px">DAMAGE LOG</div>
+        {rows if rows else '<div style="color:#333; font-size:11px">No chaos actions yet</div>'}
+        {f'<div style="color:#00ff88; font-size:11px; margin-top:6px; font-weight:bold">{silent}/{total} actions were SILENT</div>' if total else ''}
+    </div>""" if total or done else ""
+
+    return f"""<div style="
+        background:#0d1117; border:1px solid #21262d; border-radius:8px;
+        padding:16px; font-family:'IBM Plex Mono',monospace;
+    ">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <span style="color:#8b949e; font-size:10px; letter-spacing:2px">LIVE SCORE</span>
+            <span style="color:{status_color}; font-size:11px; font-weight:bold">{status}</span>
+        </div>
+        <div style="color:{s_color}; font-size:2.4em; font-weight:bold; text-align:center;
+            margin-bottom:8px; letter-spacing:2px">{score:.4f}</div>
+        <div style="background:#1a1a2e; border-radius:4px; height:6px; overflow:hidden; margin-bottom:4px;">
+            <div style="width:{bar_w}%; background:{s_color}; height:100%;
+                border-radius:4px; transition:width 0.5s ease;"></div>
+        </div>
+        <div style="color:#444; font-size:10px; text-align:right">max ~0.25 per episode</div>
+        {damage_section}
+    </div>"""
 
 # ── Polling ───────────────────────────────────────────────────────────
 def auto_refresh(reveal):
     return (
         make_noc_chart(reveal),
         make_field_report(reveal),
-        make_score_gauge(),
+        make_score_html(),
     )
 
 # ── Start ─────────────────────────────────────────────────────────────
@@ -718,11 +748,11 @@ with gr.Blocks(
                 start_btn  = gr.Button("⚡  START — Deploy Hidden Agent", variant="primary", scale=4)
                 reveal_chk = gr.Checkbox(label="🔴  Reveal Truth", value=False, scale=1)
 
-            with gr.Row(equal_height=True):
-                # Left: NOC dashboard + score
+            with gr.Row():
+                # Left: NOC dashboard + score card
                 with gr.Column(scale=5):
-                    noc_plot   = gr.Plot(show_label=False)
-                    score_plot = gr.Plot(show_label=False)
+                    noc_plot   = gr.Plot(show_label=False, container=False)
+                    score_html = gr.HTML(make_score_html())
 
                 # Right: Agent field report
                 with gr.Column(scale=6):
@@ -733,7 +763,7 @@ with gr.Blocks(
             timer.tick(
                 fn=auto_refresh,
                 inputs=[reveal_chk],
-                outputs=[noc_plot, report_html, score_plot],
+                outputs=[noc_plot, report_html, score_html],
             )
 
             start_btn.click(fn=start_episode, outputs=[])
@@ -741,7 +771,7 @@ with gr.Blocks(
             reveal_chk.change(
                 fn=auto_refresh,
                 inputs=[reveal_chk],
-                outputs=[noc_plot, report_html, score_plot],
+                outputs=[noc_plot, report_html, score_html],
             )
 
             gr.Markdown("""
