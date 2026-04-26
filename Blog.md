@@ -43,20 +43,25 @@ The full workflow the agent learns:
 
 The Calibrated Agent earns higher reward not because it knew the answer — but because it **updated its belief when evidence contradicted its hypothesis**. This is exactly the capability Chaos Auditor trains.
 
+## Training Results
+
+### Reward Curve (Real Training Run)
+![Reward Curve](training/metrics/reward_curve.png)
+
+### Before vs After GRPO Training
+![Before vs After](training/metrics/before_after.png)
+
+| Metric | Untrained | Trained | Change |
+|--------|-----------|---------|--------|
+| Episode Reward | 0.005 | 0.012 | **+140%** |
+
 ## Training Setup
 
 - **Model**: Qwen2.5-1.5B-Instruct
-- **Algorithm**: GRPO (Group Relative Policy Optimization) — manual implementation
-- **Curriculum**: easy (4 services) → medium (10 services) → hard (18 services) → random (RLVE, infinite)
+- **Algorithm**: GRPO (Group Relative Policy Optimization)
+- **Curriculum**: easy (4 services) → medium (10 services) → hard (18 services) → random (RLVE)
 - **SFT Warmup**: 4 demonstration trajectories teach action format before RL starts
-- **Metrics**: Episode reward, Stealth Ratio, Observation Gap Exploit Rate, Inference Accuracy, Hypothesis Revision Rate
-
-## Training Results
-
-| Metric | Untrained | Trained |
-|--------|-----------|---------|
-| Episode Reward | 0.005 | 0.012 |
-| Reward improvement | — | +140% |
+- **Tracking**: [Weights & Biases Run](https://wandb.ai/sohamtakale2905-mit-world-peace-university/chaos-auditor-grpo?nw=nwusersohamtakale2905)
 
 ## Why It Matters
 
