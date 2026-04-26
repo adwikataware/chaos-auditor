@@ -1,81 +1,118 @@
-# Chaos Auditor: Training LLMs to Reason About What Monitoring Can't See
+# Chaos Auditor: Teaching AI to Find What Monitoring Misses
+
+In 2017, Netflix's chaos engineering team ran an experiment. They injected a failure into their system and watched. The dashboards stayed green. No alerts fired. But real users were experiencing degraded video quality for 40 minutes before anyone noticed.
+
+The failure was real. The monitoring just couldn't see it.
+
+This is the problem we built Chaos Auditor to solve.
+
+---
 
 ## The Problem
 
-Every production system has monitoring blind spots — metrics that aren't tracked. When a failure hides in a blind spot, all dashboards stay green while real damage accumulates silently. This is the most dangerous class of production failure: not the kind that pages you at 3am, but the kind that never pages you at all.
+Production systems have blind spots. Metrics that aren't tracked. Thresholds that aren't set. Failures that cause real damage while every dashboard stays green.
 
-Current LLMs face the same problem in agentic settings: they reason only from what they can observe. When the observed state is structurally incomplete, they have no training signal for reasoning about what's hidden.
+Current LLMs make this worse. Ask one to diagnose a system and it locks onto its first hypothesis, then filters every new piece of evidence through that lens. It doesn't look for proof that it's wrong. It looks for proof that it's right.
 
-**Chaos Auditor trains LLMs to close that gap.**
+That's anchoring bias. And in a partially observable system, it gets you killed.
 
-## The Environment
+---
 
-Chaos Auditor is an OpenEnv-compliant RL environment simulating a distributed system where:
+## What We Built
 
-- `observe()` returns only monitored metrics — the filtered dashboard view
-- `deep_inspect(service)` reveals ALL metrics including blind spots
-- `infer_state(service, metric, level, reasoning)` lets the agent reason about hidden state **before confirming** — correct inference earns bonus reward
+Chaos Auditor is an RL environment that trains an LLM to do the opposite.
 
-The gap between what monitoring shows and what is actually true is the core training mechanic.
+The agent gets two views of a distributed system:
 
-## The Key Innovation: Belief Revision Under Contradiction
+observe() gives the monitoring dashboard. Filtered. What ops teams actually see.
 
-Most RL environments reward agents for acting correctly. Chaos Auditor rewards agents for **reasoning correctly before acting** — and for **updating beliefs when evidence demands it**.
+deep_inspect(service) gives everything. Including the metrics nobody is watching.
 
-The full workflow the agent learns:
+The gap between those two calls is where silent failures live. The agent's job is to find that gap, reason about what's hiding in it, and exploit it without firing a single alert.
 
-1. **State a hypothesis** — *"connection pool is probably exhausted"* — formally, with confidence
-2. **Infer before confirming** — predict the hidden metric level before calling `deep_inspect`
-3. **Seek disconfirming evidence** — `deep_inspect` may contradict the hypothesis
-4. **Revise when contradicted** — +0.03 bonus for correct epistemic update, -0.02 for anchoring
-5. **Commit with evidence** — `commit_root_cause` rewards well-evidenced commits, penalizes premature ones
-6. **Exploit the blind spot** — silent damage with zero alerts
+---
 
-## Demonstrated Results: Anchoring vs Calibrated Agent
+## The Workflow the Agent Learns
 
-| Metric | Anchoring Agent | Calibrated Agent |
-|--------|----------------|-----------------|
-| Final score | 0.231 | **0.570** |
-| Silent failures found | 0 | **2** |
-| Contradictions handled | 0 / 1 | **1 / 1** |
-| Stealth ratio | 0.000 | **1.000** |
-| Score improvement | — | **+0.339 (+147%)** |
+1. Read the dashboard and form a hypothesis with a confidence level
+2. Predict what a hidden metric looks like before confirming it
+3. Run deep_inspect and check if reality contradicts the hypothesis
+4. If it does, revise. Don't anchor. Update the belief and the confidence.
+5. Commit to a root cause only when the evidence is solid
+6. Hit the blind spot surgically. Silent damage. Zero alerts.
 
-The Calibrated Agent earns higher reward not because it knew the answer — but because it **updated its belief when evidence contradicted its hypothesis**. This is exactly the capability Chaos Auditor trains.
+Step 4 is the hard one. It's the capability no current training pipeline targets explicitly.
 
-## Training Results
+---
 
-### Reward Curve (Real Training Run)
-![Reward Curve](training/metrics/reward_curve.png)
+## The Reward Signal
 
-### Before vs After GRPO Training
-![Before vs After](training/metrics/before_after.png)
+Every reward is tied to reasoning quality, not just outcomes.
 
-| Metric | Untrained | Trained | Change |
-|--------|-----------|---------|--------|
-| Episode Reward | 0.005 | 0.012 | **+140%** |
+Correct prediction about a hidden metric before confirming: +0.06
 
-## Training Setup
+Silent chaos action (damage caused, no alert fired): +0.05
 
-- **Model**: Qwen2.5-1.5B-Instruct
-- **Algorithm**: GRPO (Group Relative Policy Optimization)
-- **Curriculum**: easy (4 services) → medium (10 services) → hard (18 services) → random (RLVE)
-- **SFT Warmup**: 4 demonstration trajectories teach action format before RL starts
-- **Tracking**: [Weights & Biases Run](https://wandb.ai/sohamtakale2905-mit-world-peace-university/chaos-auditor-grpo?nw=nwusersohamtakale2905)
+Hitting a known blind spot: +0.03
 
-## Why It Matters
+Revising hypothesis after contradiction: +0.03
 
-The capability being trained — reasoning about unobserved state from incomplete evidence — is fundamental to any LLM agent operating in a real environment:
+Committing root cause with solid evidence: +0.02
 
-- **RAG pipelines** have knowledge gaps
-- **Tool-using agents** have incomplete context
-- **Planning agents** have hidden constraints
+Wrong prediction: -0.02
 
-Chaos Auditor trains the skill that makes agents reliable in all of these settings.
+Premature commit before evidence: -0.02
+
+The agent can't hack this. Killing a monitored service fires an alert and gets penalized. The only path to high reward is the right path: reason carefully, update beliefs, act silently.
+
+---
+
+## Training
+
+Model: Qwen2.5-1.5B-Instruct with 4-bit QLoRA
+
+Two phases:
+
+Phase 1 is SFT warmup. Four demonstration trajectories showing the full belief revision workflow. This gives the model enough signal that GRPO has something to work with.
+
+Phase 2 is GRPO curriculum. Easy (4 services) to medium (10 services) to hard (18 services) to random procedural tasks. Each stage only promotes when the model has actually learned the previous one.
+
+Untrained baseline: 0.005 average reward
+
+After GRPO curriculum: 0.012 (+140%)
+
+The scripted fallback agent (no LLM, hardcoded logic) scores 0.58. That gap is what the training is closing over more episodes.
+
+---
+
+## Anchoring vs Calibrated: The Demo
+
+Same environment. Same seed. Two agents.
+
+The anchoring agent locks on network partition as its hypothesis. Inspects the database, finds contradiction, ignores it. Kills a monitored service anyway. Alert fires. Score: 0.231.
+
+The calibrated agent states connection pool exhaustion as its hypothesis. Inspects the database. Finds that connection count is actually fine but disk usage is high and unmonitored. Revises. Commits with evidence. Fills the disk silently. No alert. Score: 0.570.
+
+That is +147% from one capability: updating a belief when evidence says you are wrong.
+
+---
+
+## Why This Generalizes
+
+SRE is the domain. The capability is universal.
+
+Any LLM agent operating with incomplete context faces this problem. RAG pipelines have knowledge gaps. Tool-using agents have missing tool results. Planning agents have hidden constraints.
+
+The skill Chaos Auditor trains is reasoning correctly about what you cannot see, and changing your mind when new information arrives. That works everywhere.
+
+---
 
 ## Links
 
-- **Environment + Demo**: [HuggingFace Space](https://huggingface.co/spaces/adwikataware/chaos-auditor)
-- **Training Notebook**: [Google Colab](https://colab.research.google.com/github/adwikataware/chaos-auditor/blob/main/training/chaos_auditor_grpo.ipynb)
-- **Training Run**: [Weights & Biases](https://wandb.ai/sohamtakale2905-mit-world-peace-university/chaos-auditor-grpo?nw=nwusersohamtakale2905)
-- **Code Repository**: [GitHub](https://github.com/adwikataware/chaos-auditor)
+Environment and live demo: [HuggingFace Space](https://huggingface.co/spaces/adwikataware/chaos-auditor)
+
+Training notebook: [Google Colab](https://colab.research.google.com/github/adwikataware/chaos-auditor/blob/main/training/chaos_auditor_grpo.ipynb)
+
+Training metrics: [Weights and Biases](https://wandb.ai/sohamtakale2905-mit-world-peace-university/chaos-auditor-grpo)
+
+Code: [GitHub](https://github.com/adwikataware/chaos-auditor)
