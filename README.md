@@ -191,7 +191,7 @@ Blind spots are per-service. A database might not monitor `connection_count`. A 
 
 ## Training Pipeline
 
-**Stack:** Unsloth + TRL SFTTrainer + GRPOTrainer + Qwen2.5-3B-Instruct
+**Stack:** PEFT + manual GRPO loop + Qwen2.5-1.5B-Instruct + QLoRA (4-bit)
 
 **Two-phase training**:
 ```
