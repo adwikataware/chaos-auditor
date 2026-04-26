@@ -742,9 +742,8 @@ def start_episode():
 
 # ── Comparison charts ─────────────────────────────────────────────────
 def make_before_after_chart():
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(13, 5))
     fig.patch.set_facecolor("#0a0a0f")
-    fig.suptitle("Anchoring Agent vs Calibrated Agent", color="white", fontsize=14, fontweight="bold", y=1.02)
     data = [
         ("GRPO Training\n(Untrained → Trained)", 0.005, 0.012, 0.018),
         ("Agent Demo\n(Anchoring → Calibrated)", 0.231, 0.570, 0.65),
@@ -754,19 +753,21 @@ def make_before_after_chart():
         ax.set_facecolor("#0d1117")
         bars = ax.bar(["Anchoring\n(Biased)", "Calibrated\n(Trained)"], [a, b],
                       color=["#ff4444", "#00ff88"], width=0.5, edgecolor="#0a0a0f")
-        ax.set_ylim(0, ymax * 1.35)
-        ax.set_title(label, color="white", fontsize=10, fontweight="bold")
+        ax.set_ylim(0, ymax * 1.4)
+        ax.set_title(label, color="white", fontsize=10, fontweight="bold", pad=8)
         ax.tick_params(colors="#8b949e")
         for spine in ax.spines.values():
             spine.set_edgecolor("#21262d")
         for bar, val in zip(bars, [a, b]):
-            ax.text(bar.get_x() + bar.get_width()/2, val + ymax * 0.04,
+            ax.text(bar.get_x() + bar.get_width()/2, val + ymax * 0.05,
                     f"{val:.3f}" if isinstance(val, float) else str(val),
                     ha="center", color="white", fontsize=13, fontweight="bold")
     delta = 0.570 - 0.231
-    fig.text(0.5, -0.04, f"Score improvement: +{delta:.3f} (+147%)  |  The difference is BELIEF REVISION",
+    fig.text(0.5, 0.01, f"Score improvement: +{delta:.3f} (+147%)  |  The difference is BELIEF REVISION",
              ha="center", color="#ffd700", fontsize=11, fontweight="bold")
-    plt.tight_layout()
+    fig.suptitle("Anchoring Agent vs Calibrated Agent", color="white", fontsize=14,
+                 fontweight="bold")
+    plt.subplots_adjust(left=0.06, right=0.97, top=0.88, bottom=0.14, wspace=0.3)
     return fig
 
 def make_curriculum_chart():
