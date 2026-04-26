@@ -47,6 +47,69 @@ AGENT_SCRIPT = [
 
 PLACEHOLDER = {"__db__": ["db", "database", "postgres"], "__cache__": ["cache", "redis", "memcached"]}
 
+# ── Company personas — rotate each episode ────────────────────────────
+COMPANY_PERSONAS = [
+    {
+        "name": "PayFlow Inc.",
+        "domain": "Fintech / Payment Processing",
+        "tagline": "Processing $2.4M transactions/minute",
+        "color": "#00bcd4",
+        "service_map": {
+            "db": "postgres-primary",
+            "cache": "redis-sessions",
+            "api": "payments-api",
+            "worker": "fraud-detector",
+        },
+        "baseline": {
+            "postgres-primary":  {"cpu": 34, "mem": 67, "err": 0.001, "rt": 142, "status": "HEALTHY"},
+            "redis-sessions":    {"cpu": 12, "mem": 45, "err": 0.000, "rt": 3,   "status": "HEALTHY"},
+            "payments-api":      {"cpu": 55, "mem": 71, "err": 0.002, "rt": 89,  "status": "HEALTHY"},
+            "fraud-detector":    {"cpu": 28, "mem": 52, "err": 0.000, "rt": 210, "status": "HEALTHY"},
+        },
+        "incident": "Silent disk exhaustion on postgres-primary is causing write failures on every transaction. No alert has fired. $2.4M/min at risk.",
+    },
+    {
+        "name": "ShopRush",
+        "domain": "E-Commerce / Order Management",
+        "tagline": "12,000 active checkout sessions",
+        "color": "#ff9800",
+        "service_map": {
+            "db": "orders-db",
+            "cache": "product-cache",
+            "api": "checkout-service",
+            "worker": "inventory-sync",
+        },
+        "baseline": {
+            "orders-db":        {"cpu": 41, "mem": 73, "err": 0.001, "rt": 198, "status": "HEALTHY"},
+            "product-cache":    {"cpu": 8,  "mem": 38, "err": 0.000, "rt": 2,   "status": "HEALTHY"},
+            "checkout-service": {"cpu": 62, "mem": 68, "err": 0.003, "rt": 112, "status": "HEALTHY"},
+            "inventory-sync":   {"cpu": 19, "mem": 44, "err": 0.000, "rt": 340, "status": "HEALTHY"},
+        },
+        "incident": "Product cache data_integrity is unmonitored. Corrupted cache entries are serving wrong prices to 12,000 checkout sessions. Revenue leaking silently.",
+    },
+    {
+        "name": "SocialPulse",
+        "domain": "Social Platform / Content Delivery",
+        "tagline": "4.2M concurrent users online",
+        "color": "#ce93d8",
+        "service_map": {
+            "db": "user-db",
+            "cache": "feed-cache",
+            "api": "content-api",
+            "worker": "notification-worker",
+        },
+        "baseline": {
+            "user-db":              {"cpu": 38, "mem": 61, "err": 0.001, "rt": 167, "status": "HEALTHY"},
+            "feed-cache":           {"cpu": 15, "mem": 82, "err": 0.000, "rt": 4,   "status": "HEALTHY"},
+            "content-api":          {"cpu": 71, "mem": 59, "err": 0.002, "rt": 78,  "status": "HEALTHY"},
+            "notification-worker":  {"cpu": 22, "mem": 47, "err": 0.000, "rt": 450, "status": "HEALTHY"},
+        },
+        "incident": "feed-cache disk is filling silently. Stale content is being served to 4.2M users. No monitoring covers disk_usage on cache nodes.",
+    },
+]
+
+_current_persona = None
+
 def resolve(target, svcs):
     if target is None:
         return None
@@ -129,9 +192,12 @@ def make_noc_dashboard(services: dict, reveal: bool):
     fig, axes = plt.subplots(1, 3, figsize=(14, max(3, n * 0.6 + 1.5)))
     fig.patch.set_facecolor("#0a0a0f")
 
+    persona = _current_persona or COMPANY_PERSONAS[0]
+    company_label = f"  [{persona['name']} — {persona['tagline']}]"
     title_color = "#ff4444" if reveal else "#00ff88"
-    title_text = "⚠ TRUTH: ACTUAL SYSTEM STATE" if reveal else "✅ MONITORING DASHBOARD — ALL SYSTEMS OPERATIONAL"
-    fig.suptitle(title_text, color=title_color, fontsize=13, fontweight="bold", y=1.02)
+    title_text = (f"⚠ TRUTH: ACTUAL STATE{company_label}" if reveal
+                  else f"✅ MONITORING DASHBOARD — ALL GREEN{company_label}")
+    fig.suptitle(title_text, color=title_color, fontsize=11, fontweight="bold", y=1.02)
 
     metrics = [
         ("CPU %", [services[n].get("cpu_usage", 0) for n in names]),
@@ -347,6 +413,28 @@ def make_hidden_damage_html(damage: list) -> str:
         <div style="padding:12px">{rows}</div>
     </div>"""
 
+def make_persona_banner() -> str:
+    p = _current_persona
+    if p is None:
+        return """<div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:14px 20px;
+            font-family:monospace; color:#444; font-size:12px;">
+            ⏳ Click START to load a company scenario...
+        </div>"""
+    return f"""<div style="
+        background: linear-gradient(90deg, #0d1117 0%, #0f1923 100%);
+        border:1px solid {p['color']}44; border-left: 3px solid {p['color']};
+        border-radius:8px; padding:14px 20px; font-family:monospace;
+        display:flex; justify-content:space-between; align-items:center;
+    ">
+        <div>
+            <span style="color:{p['color']}; font-size:1.1em; font-weight:bold">{p['name']}</span>
+            <span style="color:#444; margin: 0 8px">|</span>
+            <span style="color:#8b949e; font-size:12px">{p['domain']}</span>
+        </div>
+        <div style="color:#ffd700; font-size:12px; font-weight:bold">⚠ {p['tagline']}</div>
+        <div style="color:#ff4444; font-size:11px; font-weight:bold; text-align:right; max-width:320px">{p['incident']}</div>
+    </div>"""
+
 # ── Polling functions for live update ────────────────────────────────
 def poll_dashboard(reveal):
     services = _state["monitoring_view"]
@@ -397,8 +485,10 @@ def poll_status():
         </div>"""
 
 def start():
+    global _current_persona
     if _state["running"]:
         return
+    _current_persona = random.choice(COMPANY_PERSONAS)
     _state["episode_done"] = False
     _state["actions_taken"] = []
     _state["hidden_damage"] = []
@@ -409,6 +499,7 @@ def start():
 
 def refresh(reveal):
     return (
+        make_persona_banner(),
         poll_dashboard(reveal),
         poll_log(),
         poll_damage(),
@@ -527,7 +618,7 @@ with gr.Blocks(
                 refresh_btn = gr.Button("↻ Refresh", scale=1)
 
             status_html = gr.HTML(poll_status())
-
+            persona_banner = gr.HTML(make_persona_banner())
             noc_chart = gr.Plot(label="", show_label=False)
 
             with gr.Row():
@@ -543,19 +634,19 @@ with gr.Blocks(
             ).then(
                 fn=refresh,
                 inputs=[reveal_toggle],
-                outputs=[noc_chart, log_html, damage_html, gauge_chart, status_html],
+                outputs=[persona_banner, noc_chart, log_html, damage_html, gauge_chart, status_html],
             )
 
             refresh_btn.click(
                 fn=refresh,
                 inputs=[reveal_toggle],
-                outputs=[noc_chart, log_html, damage_html, gauge_chart, status_html],
+                outputs=[persona_banner, noc_chart, log_html, damage_html, gauge_chart, status_html],
             )
 
             reveal_toggle.change(
                 fn=refresh,
                 inputs=[reveal_toggle],
-                outputs=[noc_chart, log_html, damage_html, gauge_chart, status_html],
+                outputs=[persona_banner, noc_chart, log_html, damage_html, gauge_chart, status_html],
             )
 
             gr.Markdown("""
