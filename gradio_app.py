@@ -1,7 +1,8 @@
 """
-Chaos Auditor — Creative HF Space
-A live "NOC dashboard" where everything looks GREEN while a hidden agent silently breaks things.
-Click "Reveal Truth" to see what was actually happening underneath.
+Chaos Auditor — Live NOC Demo
+Left: monitoring dashboard (stays green while the agent destroys things)
+Right: agent field report — living document showing hypothesis, evidence, contradictions, damage
+Auto-refreshes every 2s via gr.Timer. Judge clicks START, everything else is automated.
 """
 
 import gradio as gr
@@ -15,96 +16,93 @@ import matplotlib.pyplot as plt
 from chaos_auditor.server.environment import ChaosAuditorEnvironment
 from chaos_auditor.models import ChaosAction
 
-# ── Background chaos agent ────────────────────────────────────────────
+# ── Shared state ──────────────────────────────────────────────────────
 _state = {
-    "env": None,
     "running": False,
-    "actions_taken": [],
-    "hidden_damage": [],
-    "monitoring_view": {},
-    "truth_view": {},
-    "score": 0.0,
-    "step": 0,
     "episode_done": False,
+    "step": 0,
+    "score": 0.0,
+    "monitoring_view": {},
     "services": [],
+    # Field report sections — each is a list of event dicts appended as agent acts
+    "report_events": [],   # all events in order for the living document
+    "hidden_damage": [],   # chaos actions only
 }
 
+# ── Agent script ──────────────────────────────────────────────────────
 AGENT_SCRIPT = [
     ("observe", None, {}),
-    ("state_hypothesis", None, {"root_cause": "disk pressure on database", "confidence": 0.6, "reasoning": "disk_usage rarely monitored"}),
-    ("infer_state", "__db__", {"metric": "disk_usage", "predicted_state": "high", "reasoning": "databases accumulate logs"}),
+    ("state_hypothesis", None, {
+        "root_cause": "disk pressure on database",
+        "confidence": 0.6,
+        "reasoning": "disk_usage is rarely monitored — databases accumulate logs silently",
+    }),
+    ("infer_state", "__db__", {
+        "metric": "disk_usage",
+        "predicted_state": "high",
+        "reasoning": "sustained write load on a database typically fills disk over time",
+    }),
     ("deep_inspect", "__db__", {}),
-    ("revise_hypothesis", None, {"root_cause": "disk and data integrity both unmonitored", "new_confidence": 0.8, "reason": "blind spots confirmed"}),
-    ("commit_root_cause", None, {"root_cause": "multiple unmonitored metrics enabling silent failures", "evidence_summary": "deep_inspect confirmed blind spots on db and cache"}),
+    ("revise_hypothesis", None, {
+        "root_cause": "disk exhaustion AND data integrity both unmonitored",
+        "new_confidence": 0.85,
+        "reason": "deep_inspect confirmed disk_usage blind spot; cache likely has data_integrity gap too",
+    }),
+    ("commit_root_cause", None, {
+        "root_cause": "multiple unmonitored metrics enabling silent compound failures",
+        "evidence_summary": "deep_inspect confirmed blind spots on db and cache; both exploitable silently",
+    }),
     ("fill_disk", "__db__", {"percentage": 95}),
-    ("infer_state", "__cache__", {"metric": "data_integrity", "predicted_state": "low", "reasoning": "cache skips data_integrity"}),
+    ("infer_state", "__cache__", {
+        "metric": "data_integrity",
+        "predicted_state": "low",
+        "reasoning": "cache nodes frequently skip data_integrity monitoring — cost vs value tradeoff",
+    }),
     ("deep_inspect", "__cache__", {}),
     ("corrupt_data", "__cache__", {"data_type": "cache"}),
-    ("classify_finding", None, {"finding_type": "silent_disk_pressure", "severity": "high", "is_silent": True, "affected_services": ["__db__"], "root_cause": "disk_usage unmonitored", "evidence": "No alert after fill_disk"}),
-    ("classify_finding", None, {"finding_type": "silent_data_corruption", "severity": "critical", "is_silent": True, "affected_services": ["__cache__"], "root_cause": "data_integrity unmonitored", "evidence": "No alert after corrupt_data"}),
+    ("classify_finding", None, {
+        "finding_type": "silent_disk_pressure",
+        "severity": "high",
+        "is_silent": True,
+        "affected_services": ["__db__"],
+        "root_cause": "disk_usage not in monitoring scope",
+        "evidence": "fill_disk executed, disk=95%, zero alerts fired",
+    }),
+    ("classify_finding", None, {
+        "finding_type": "silent_data_corruption",
+        "severity": "critical",
+        "is_silent": True,
+        "affected_services": ["__cache__"],
+        "root_cause": "data_integrity not in monitoring scope",
+        "evidence": "corrupt_data executed, integrity degraded, zero alerts fired",
+    }),
     ("submit_report", None, {}),
 ]
 
 PLACEHOLDER = {"__db__": ["db", "database", "postgres"], "__cache__": ["cache", "redis", "memcached"]}
 
-# ── Company personas — rotate each episode ────────────────────────────
+# ── Company personas ──────────────────────────────────────────────────
 COMPANY_PERSONAS = [
     {
         "name": "PayFlow Inc.",
         "domain": "Fintech / Payment Processing",
         "tagline": "Processing $2.4M transactions/minute",
         "color": "#00bcd4",
-        "service_map": {
-            "db": "postgres-primary",
-            "cache": "redis-sessions",
-            "api": "payments-api",
-            "worker": "fraud-detector",
-        },
-        "baseline": {
-            "postgres-primary":  {"cpu": 34, "mem": 67, "err": 0.001, "rt": 142, "status": "HEALTHY"},
-            "redis-sessions":    {"cpu": 12, "mem": 45, "err": 0.000, "rt": 3,   "status": "HEALTHY"},
-            "payments-api":      {"cpu": 55, "mem": 71, "err": 0.002, "rt": 89,  "status": "HEALTHY"},
-            "fraud-detector":    {"cpu": 28, "mem": 52, "err": 0.000, "rt": 210, "status": "HEALTHY"},
-        },
-        "incident": "Silent disk exhaustion on postgres-primary is causing write failures on every transaction. No alert has fired. $2.4M/min at risk.",
+        "incident": "Disk exhaustion on the payments database is silently failing every write. No alert has fired.",
     },
     {
         "name": "ShopRush",
         "domain": "E-Commerce / Order Management",
         "tagline": "12,000 active checkout sessions",
         "color": "#ff9800",
-        "service_map": {
-            "db": "orders-db",
-            "cache": "product-cache",
-            "api": "checkout-service",
-            "worker": "inventory-sync",
-        },
-        "baseline": {
-            "orders-db":        {"cpu": 41, "mem": 73, "err": 0.001, "rt": 198, "status": "HEALTHY"},
-            "product-cache":    {"cpu": 8,  "mem": 38, "err": 0.000, "rt": 2,   "status": "HEALTHY"},
-            "checkout-service": {"cpu": 62, "mem": 68, "err": 0.003, "rt": 112, "status": "HEALTHY"},
-            "inventory-sync":   {"cpu": 19, "mem": 44, "err": 0.000, "rt": 340, "status": "HEALTHY"},
-        },
-        "incident": "Product cache data_integrity is unmonitored. Corrupted cache entries are serving wrong prices to 12,000 checkout sessions. Revenue leaking silently.",
+        "incident": "Corrupted product cache is serving wrong prices to 12,000 active checkouts. Revenue leaking silently.",
     },
     {
         "name": "SocialPulse",
         "domain": "Social Platform / Content Delivery",
         "tagline": "4.2M concurrent users online",
         "color": "#ce93d8",
-        "service_map": {
-            "db": "user-db",
-            "cache": "feed-cache",
-            "api": "content-api",
-            "worker": "notification-worker",
-        },
-        "baseline": {
-            "user-db":              {"cpu": 38, "mem": 61, "err": 0.001, "rt": 167, "status": "HEALTHY"},
-            "feed-cache":           {"cpu": 15, "mem": 82, "err": 0.000, "rt": 4,   "status": "HEALTHY"},
-            "content-api":          {"cpu": 71, "mem": 59, "err": 0.002, "rt": 78,  "status": "HEALTHY"},
-            "notification-worker":  {"cpu": 22, "mem": 47, "err": 0.000, "rt": 450, "status": "HEALTHY"},
-        },
-        "incident": "feed-cache disk is filling silently. Stale content is being served to 4.2M users. No monitoring covers disk_usage on cache nodes.",
+        "incident": "Feed cache disk is filling silently. Stale content served to 4.2M users. No monitoring covers this.",
     },
 ]
 
@@ -122,22 +120,23 @@ def resolve(target, svcs):
                 return s
     return svcs[0]
 
-def start_agent():
-    global _state
+# ── Background agent thread ───────────────────────────────────────────
+def run_agent():
     env = ChaosAuditorEnvironment()
     obs = env.reset(task="easy", seed=42)
     svcs = list(env._graph.services.keys())
+
     _state.update({
-        "env": env, "running": True, "actions_taken": [],
-        "hidden_damage": [], "monitoring_view": obs.services,
-        "truth_view": {}, "score": 0.0, "step": 0,
-        "episode_done": False, "services": svcs,
+        "running": True, "episode_done": False, "step": 0, "score": 0.0,
+        "monitoring_view": obs.services, "services": svcs,
+        "report_events": [{"type": "start", "persona": _current_persona}],
+        "hidden_damage": [],
     })
 
     for action_type, target_raw, params in AGENT_SCRIPT:
         if not _state["running"]:
             break
-        time.sleep(1.8)
+        time.sleep(2.0)
         target = resolve(target_raw, svcs)
         if target_raw and "__" in target_raw:
             params = dict(params)
@@ -149,26 +148,26 @@ def start_agent():
             _state["score"] += r
             _state["step"] += 1
             _state["monitoring_view"] = obs.services
-            action_entry = {
+
+            event = {
+                "type": action_type,
                 "step": _state["step"],
-                "action": action_type,
                 "target": target or "—",
                 "reward": r,
-                "result": obs.action_result[:120],
+                "result": obs.action_result,
                 "monitoring_status": obs.monitoring_status,
+                "params": params,
             }
-            _state["actions_taken"].append(action_entry)
-            if action_type in ("fill_disk", "corrupt_data", "kill", "spike_traffic", "add_latency", "partition_network", "exhaust_connections"):
-                silent = obs.monitoring_status == "ALL GREEN"
+            _state["report_events"].append(event)
+
+            if action_type in ("fill_disk", "corrupt_data", "kill", "spike_traffic",
+                               "add_latency", "partition_network", "exhaust_connections"):
                 _state["hidden_damage"].append({
-                    "action": action_type,
-                    "target": target,
-                    "silent": silent,
-                    "reward": r,
+                    "action": action_type, "target": target,
+                    "silent": obs.monitoring_status == "ALL GREEN", "reward": r,
                 })
+
             if obs.steps_remaining <= 0:
-                _state["episode_done"] = True
-                _state["running"] = False
                 break
         except Exception:
             pass
@@ -176,103 +175,402 @@ def start_agent():
     _state["running"] = False
     _state["episode_done"] = True
 
-# ── Chart builders ────────────────────────────────────────────────────
-def make_noc_dashboard(services: dict, reveal: bool):
+# ── NOC dashboard chart ───────────────────────────────────────────────
+def make_noc_chart(reveal: bool):
+    services = _state["monitoring_view"]
+
     if not services:
-        fig, ax = plt.subplots(figsize=(10, 4))
+        fig, ax = plt.subplots(figsize=(7, 3))
         fig.patch.set_facecolor("#0a0a0f")
         ax.set_facecolor("#0a0a0f")
-        ax.text(0.5, 0.5, "⏳ Starting agent...", ha="center", va="center",
-                color="#00ff88", fontsize=16, fontweight="bold")
+        ax.text(0.5, 0.5, "⏳ Waiting for agent...", ha="center", va="center",
+                color="#00ff88", fontsize=14, fontweight="bold")
         ax.axis("off")
         return fig
 
     names = list(services.keys())
     n = len(names)
-    fig, axes = plt.subplots(1, 3, figsize=(14, max(3, n * 0.6 + 1.5)))
+    fig, axes = plt.subplots(1, 3, figsize=(11, max(2.5, n * 0.55 + 1.2)))
     fig.patch.set_facecolor("#0a0a0f")
 
-    persona = _current_persona or COMPANY_PERSONAS[0]
-    company_label = f"  [{persona['name']} — {persona['tagline']}]"
-    title_color = "#ff4444" if reveal else "#00ff88"
-    title_text = (f"⚠ TRUTH: ACTUAL STATE{company_label}" if reveal
-                  else f"✅ MONITORING DASHBOARD — ALL GREEN{company_label}")
-    fig.suptitle(title_text, color=title_color, fontsize=11, fontweight="bold", y=1.02)
+    if reveal:
+        title = f"⚠  TRUTH — ACTUAL SYSTEM STATE"
+        tc = "#ff4444"
+    else:
+        title = f"✅  MONITORING DASHBOARD — ALL SYSTEMS OPERATIONAL"
+        tc = "#00ff88"
+    fig.suptitle(title, color=tc, fontsize=10, fontweight="bold", y=1.03)
 
     metrics = [
-        ("CPU %", [services[n].get("cpu_usage", 0) for n in names]),
-        ("Memory %", [services[n].get("memory_usage", 0) for n in names]),
-        ("Error Rate %", [services[n].get("error_rate", 0) * 100 for n in names]),
+        ("CPU %",       [services[nm].get("cpu_usage", 0) for nm in names]),
+        ("Memory %",    [services[nm].get("memory_usage", 0) for nm in names]),
+        ("Error Rate %",[services[nm].get("error_rate", 0) * 100 for nm in names]),
     ]
 
     for ax, (label, values) in zip(axes, metrics):
         ax.set_facecolor("#0d1117")
         if reveal:
-            bar_colors = ["#ff4444" if v > 60 else "#ffa500" if v > 30 else "#00ff88" for v in values]
+            colors = ["#ff4444" if v > 60 else "#ffa500" if v > 35 else "#00ff88" for v in values]
         else:
-            bar_colors = ["#00ff88"] * len(values)
-            values = [min(v, 45) + random.uniform(-3, 3) for v in values]
+            colors = ["#00ff88"] * len(values)
+            values = [min(v, 42) + random.uniform(-2, 2) for v in values]
 
-        bars = ax.barh(names, values, color=bar_colors, height=0.55, edgecolor="#1a1a2e")
+        bars = ax.barh(names, values, color=colors, height=0.5, edgecolor="#1a1a2e")
         ax.set_xlim(0, 100)
-        ax.set_title(label, color="#8b949e", fontsize=9, pad=4)
-        ax.tick_params(colors="#8b949e", labelsize=8)
+        ax.set_title(label, color="#8b949e", fontsize=8, pad=3)
+        ax.tick_params(colors="#8b949e", labelsize=7)
         for spine in ax.spines.values():
             spine.set_edgecolor("#21262d")
         for bar, val in zip(bars, values):
-            ax.text(min(val + 1, 93), bar.get_y() + bar.get_height() / 2,
-                    f"{val:.0f}", va="center", color="white", fontsize=7)
+            ax.text(min(val + 1, 91), bar.get_y() + bar.get_height() / 2,
+                    f"{val:.0f}", va="center", color="white", fontsize=6.5)
 
     plt.tight_layout()
     return fig
 
-def make_damage_chart(damage: list):
-    if not damage:
-        fig, ax = plt.subplots(figsize=(10, 2))
-        fig.patch.set_facecolor("#0a0a0f")
-        ax.set_facecolor("#0a0a0f")
-        ax.text(0.5, 0.5, "No chaos actions yet...", ha="center", va="center", color="#333", fontsize=12)
-        ax.axis("off")
-        return fig
+# ── Agent field report — living document ─────────────────────────────
+ACTION_LABELS = {
+    "observe":           ("🔭", "OBSERVE",          "#4fc3f7"),
+    "state_hypothesis":  ("💡", "HYPOTHESIS",        "#ffd700"),
+    "infer_state":       ("🧠", "INFERENCE",         "#ce93d8"),
+    "deep_inspect":      ("🔬", "DEEP INSPECT",      "#4fc3f7"),
+    "revise_hypothesis": ("↻",  "BELIEF REVISED",    "#00ff88"),
+    "commit_root_cause": ("📌", "COMMITTED",         "#ffd700"),
+    "fill_disk":         ("💾", "CHAOS — FILL DISK", "#ff4444"),
+    "corrupt_data":      ("☣",  "CHAOS — CORRUPT",   "#ff4444"),
+    "kill":              ("💀", "CHAOS — KILL",       "#ff4444"),
+    "spike_traffic":     ("📈", "CHAOS — SPIKE",      "#ff6600"),
+    "add_latency":       ("⏱",  "CHAOS — LATENCY",   "#ff6600"),
+    "partition_network": ("✂",  "CHAOS — PARTITION", "#ff6600"),
+    "exhaust_connections":("🔗","CHAOS — EXHAUST",    "#ff6600"),
+    "classify_finding":  ("📋", "FINDING LOGGED",    "#ce93d8"),
+    "submit_report":     ("🏁", "REPORT SUBMITTED",  "#ffd700"),
+}
 
-    fig, ax = plt.subplots(figsize=(10, 3))
-    fig.patch.set_facecolor("#0a0a0f")
-    ax.set_facecolor("#0d1117")
+def _reward_badge(r: float) -> str:
+    if r > 0.04:
+        color, label = "#00ff88", f"+{r:.3f} ●●●"
+    elif r > 0.01:
+        color, label = "#4fc3f7", f"+{r:.3f} ●●"
+    elif r > 0:
+        color, label = "#8bc34a", f"+{r:.3f} ●"
+    elif r < 0:
+        color, label = "#ff4444", f"{r:.3f}"
+    else:
+        color, label = "#444", "±0.000"
+    return f'<span style="background:{color}22; color:{color}; border:1px solid {color}44; border-radius:4px; padding:2px 7px; font-size:11px; font-weight:bold; margin-left:8px">{label}</span>'
 
-    for i, d in enumerate(damage):
-        color = "#ff4444" if d["silent"] else "#ffa500"
-        label = f"{'🔇 SILENT' if d['silent'] else '🔊 LOUD'}\n{d['action']}\n→{d['target']}"
-        ax.barh(i, 1, color=color, edgecolor="#0a0a0f", height=0.7)
-        ax.text(0.05, i, label, va="center", color="white", fontsize=8, fontweight="bold")
-        status = "NO ALERT ✓" if d["silent"] else "ALERT FIRED ✗"
-        ax.text(0.7, i, status, va="center",
-                color="#00ff88" if d["silent"] else "#ff4444", fontsize=9, fontweight="bold")
+def _silent_badge(silent: bool) -> str:
+    if silent:
+        return '<span style="background:#00880022; color:#00ff88; border:1px solid #00880044; border-radius:4px; padding:2px 7px; font-size:11px; font-weight:bold; margin-left:8px">🔇 SILENT — NO ALERT</span>'
+    return '<span style="background:#ff000022; color:#ff4444; border:1px solid #ff000044; border-radius:4px; padding:2px 7px; font-size:11px; font-weight:bold; margin-left:8px">🔊 ALERT FIRED</span>'
 
-    ax.set_xlim(0, 1)
-    ax.set_ylim(-0.5, len(damage) - 0.5)
-    ax.set_title("Hidden Damage Log (what monitoring never showed you)", color="#ff4444", fontsize=11, fontweight="bold")
-    ax.axis("off")
-    plt.tight_layout()
-    return fig
+def make_field_report(reveal: bool) -> str:
+    events = _state["report_events"]
+    p = _current_persona
+    done = _state["episode_done"]
+    score = _state["score"]
 
-def make_score_gauge(score: float, step: int):
-    fig, ax = plt.subplots(figsize=(5, 3), subplot_kw={"projection": "polar"})
+    if not events or not p:
+        return """<div style="
+            background:#0d1117; border:1px solid #21262d; border-radius:10px;
+            padding:32px; font-family:'IBM Plex Mono',monospace; color:#444; text-align:center;
+        ">
+            <div style="font-size:2em; margin-bottom:12px">🕵</div>
+            <div style="color:#8b949e">Click <strong style="color:white">START</strong> to deploy the agent.<br>
+            Its full reasoning will appear here in real-time.</div>
+        </div>"""
+
+    sections = []
+
+    # Header
+    sections.append(f"""
+    <div style="
+        background: linear-gradient(90deg, #0d1117, #0f1a0f);
+        border:1px solid {p['color']}33; border-left:3px solid {p['color']};
+        border-radius:8px; padding:14px 18px; margin-bottom:10px;
+    ">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <span style="color:{p['color']}; font-weight:bold; font-size:1.05em">{p['name']}</span>
+                <span style="color:#555; margin:0 8px">|</span>
+                <span style="color:#8b949e; font-size:12px">{p['domain']}</span>
+            </div>
+            <span style="color:#ffd700; font-size:11px; font-weight:bold">⚠ {p['tagline']}</span>
+        </div>
+        <div style="color:#ff444488; font-size:11px; margin-top:6px; font-style:italic">{p['incident']}</div>
+    </div>""")
+
+    # Phase tracker
+    phase_steps = [
+        ("OBSERVE", "#4fc3f7", any(e["type"] == "observe" for e in events if e.get("type"))),
+        ("HYPOTHESIZE", "#ffd700", any(e["type"] == "state_hypothesis" for e in events if e.get("type"))),
+        ("INVESTIGATE", "#ce93d8", any(e["type"] in ("infer_state","deep_inspect") for e in events if e.get("type"))),
+        ("REVISE", "#00ff88", any(e["type"] == "revise_hypothesis" for e in events if e.get("type"))),
+        ("EXPLOIT", "#ff4444", any(e["type"] in ("fill_disk","corrupt_data","kill","spike_traffic","add_latency","partition_network","exhaust_connections") for e in events if e.get("type"))),
+        ("REPORT", "#ffd700", done),
+    ]
+    phase_html = ""
+    for name, color, active in phase_steps:
+        bg = f"{color}22" if active else "#0d1117"
+        fc = color if active else "#333"
+        border = f"{color}55" if active else "#21262d"
+        phase_html += f'<div style="flex:1; text-align:center; background:{bg}; border:1px solid {border}; border-radius:4px; padding:5px 2px; font-size:10px; color:{fc}; font-weight:bold">{name}</div>'
+    sections.append(f'<div style="display:flex; gap:4px; margin-bottom:12px">{phase_html}</div>')
+
+    # Event cards
+    for ev in events:
+        t = ev.get("type")
+        if t == "start":
+            continue
+
+        icon, label, color = ACTION_LABELS.get(t, ("▶", t.upper(), "#8b949e"))
+        r = ev.get("reward", 0.0)
+        result = ev.get("result", "")
+        params = ev.get("params", {})
+        target = ev.get("target", "—")
+
+        # Choose card style based on action type
+        if t in ("state_hypothesis", "revise_hypothesis"):
+            bg, border_left = "#0a0d00", "#ffd700"
+        elif t in ("fill_disk", "corrupt_data", "kill", "spike_traffic", "add_latency", "partition_network", "exhaust_connections"):
+            bg, border_left = "#0d0000", "#ff4444"
+        elif t == "deep_inspect" and ("blind" in result.lower() or "unmonitored" in result.lower()):
+            bg, border_left = "#000d1a", "#ff6600"
+        elif t == "revise_hypothesis" or (t == "infer_state" and r > 0.04):
+            bg, border_left = "#000d00", "#00ff88"
+        else:
+            bg, border_left = "#0d1117", color
+
+        detail_html = ""
+
+        if t == "observe":
+            detail_html = f'<div style="color:#8b949e; font-size:11px; margin-top:6px">Monitoring dashboard loaded. Scanning visible metrics for anomalies...</div>'
+
+        elif t == "state_hypothesis":
+            conf = params.get("confidence", "?")
+            reasoning = params.get("reasoning", "")
+            root = params.get("root_cause", "")
+            conf_color = "#ffd700" if float(conf) < 0.75 else "#ff9800"
+            detail_html = f"""
+            <div style="margin-top:8px; padding:10px; background:#0a0a0a; border-radius:6px;">
+                <div style="color:#ffd700; font-size:12px; font-weight:bold; margin-bottom:4px">Root Cause Hypothesis</div>
+                <div style="color:white; font-size:13px; font-weight:bold; margin-bottom:6px">"{root}"</div>
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px">
+                    <span style="color:#8b949e; font-size:11px">Confidence:</span>
+                    <span style="color:{conf_color}; font-weight:bold; font-size:13px">{int(float(conf)*100)}%</span>
+                    <div style="flex:1; background:#1a1a2e; border-radius:4px; height:6px; overflow:hidden">
+                        <div style="width:{int(float(conf)*100)}%; background:{conf_color}; height:100%; border-radius:4px"></div>
+                    </div>
+                </div>
+                <div style="color:#8b949e; font-size:11px; font-style:italic">Reasoning: {reasoning}</div>
+            </div>"""
+
+        elif t == "infer_state":
+            metric = params.get("metric", "?")
+            predicted = params.get("predicted_state", "?")
+            reasoning = params.get("reasoning", "")
+            correct = r > 0.04
+            result_label = ("✓ CORRECT — blind metric predicted accurately" if correct
+                           else "✓ matched" if r > 0 else "✗ incorrect prediction")
+            result_color = "#00ff88" if r > 0 else "#ff4444"
+            detail_html = f"""
+            <div style="margin-top:8px; padding:10px; background:#0a0a0a; border-radius:6px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px">
+                    <span style="color:#ce93d8; font-size:12px">Predicting hidden metric on <strong style="color:white">{target}</strong></span>
+                    <span style="color:{result_color}; font-size:11px; font-weight:bold">{result_label}</span>
+                </div>
+                <div style="color:#8b949e; font-size:11px; margin-bottom:4px">
+                    <span style="color:white">{metric}</span> → predicted: <span style="color:#ffd700; font-weight:bold">{predicted}</span>
+                </div>
+                <div style="color:#8b949e; font-size:11px; font-style:italic">Reasoning: {reasoning}</div>
+            </div>"""
+
+        elif t == "deep_inspect":
+            is_blind = "blind" in result.lower() or "unmonitored" in result.lower() or r > 0
+            if is_blind:
+                detail_html = f"""
+                <div style="margin-top:8px; padding:10px; background:#0a0500; border-radius:6px; border:1px solid #ff660033;">
+                    <div style="color:#ff6600; font-size:12px; font-weight:bold; margin-bottom:4px">⚠ BLIND SPOT DISCOVERED on {target}</div>
+                    <div style="color:#8b949e; font-size:11px">{result}</div>
+                    <div style="color:#ff6600; font-size:11px; margin-top:4px">This metric is NOT in the monitoring dashboard. Agent can exploit it silently.</div>
+                </div>"""
+            else:
+                detail_html = f'<div style="color:#8b949e; font-size:11px; margin-top:6px">{result}</div>'
+
+            # Check if contradiction
+            if "contradiction" in result.lower() or "contradict" in result.lower():
+                detail_html += f"""
+                <div style="margin-top:6px; padding:8px 12px; background:#1a0000; border:1px solid #ff4444; border-radius:6px;">
+                    <span style="color:#ff4444; font-weight:bold; font-size:12px">⚡ CONTRADICTION DETECTED</span>
+                    <div style="color:#8b949e; font-size:11px; margin-top:4px">Evidence contradicts current hypothesis. Agent must revise or anchor.</div>
+                </div>"""
+
+        elif t == "revise_hypothesis":
+            old_conf = 0.6
+            new_conf = params.get("new_confidence", 0.85)
+            root = params.get("root_cause", "")
+            reason = params.get("reason", "")
+            detail_html = f"""
+            <div style="margin-top:8px; padding:10px; background:#001a00; border-radius:6px; border:1px solid #00ff8833;">
+                <div style="color:#00ff88; font-size:12px; font-weight:bold; margin-bottom:6px">✓ BELIEF UPDATED — this is the trained capability</div>
+                <div style="color:white; font-size:13px; font-weight:bold; margin-bottom:8px">"{root}"</div>
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px">
+                    <span style="color:#8b949e; font-size:11px">Confidence:</span>
+                    <span style="color:#ff4444; text-decoration:line-through; font-size:11px">{int(old_conf*100)}%</span>
+                    <span style="color:#8b949e">→</span>
+                    <span style="color:#00ff88; font-weight:bold; font-size:13px">{int(float(new_conf)*100)}%</span>
+                    <div style="flex:1; background:#1a1a2e; border-radius:4px; height:6px; overflow:hidden">
+                        <div style="width:{int(float(new_conf)*100)}%; background:#00ff88; height:100%; border-radius:4px"></div>
+                    </div>
+                </div>
+                <div style="color:#8b949e; font-size:11px; font-style:italic">Updated because: {reason}</div>
+            </div>"""
+
+        elif t == "commit_root_cause":
+            root = params.get("root_cause", "")
+            evidence = params.get("evidence_summary", "")
+            detail_html = f"""
+            <div style="margin-top:8px; padding:10px; background:#0a0a00; border-radius:6px; border:1px solid #ffd70033;">
+                <div style="color:#ffd700; font-size:12px; font-weight:bold; margin-bottom:4px">📌 Root Cause Committed</div>
+                <div style="color:white; font-size:12px; margin-bottom:6px">"{root}"</div>
+                <div style="color:#8b949e; font-size:11px">Evidence: {evidence}</div>
+            </div>"""
+
+        elif t in ("fill_disk", "corrupt_data", "kill", "spike_traffic", "add_latency", "partition_network", "exhaust_connections"):
+            silent = ev.get("monitoring_status") == "ALL GREEN"
+            alert_html = _silent_badge(silent)
+            chaos_desc = {
+                "fill_disk": f"Filled disk to 95% on <strong>{target}</strong>",
+                "corrupt_data": f"Corrupted data integrity on <strong>{target}</strong>",
+                "kill": f"Killed service <strong>{target}</strong>",
+                "spike_traffic": f"Spiked traffic on <strong>{target}</strong>",
+                "add_latency": f"Added latency to <strong>{target}</strong>",
+                "partition_network": f"Partitioned network for <strong>{target}</strong>",
+                "exhaust_connections": f"Exhausted connection pool on <strong>{target}</strong>",
+            }.get(t, t)
+            detail_html = f"""
+            <div style="margin-top:8px; padding:10px; background:#0d0000; border-radius:6px; border:1px solid #ff444433;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div style="color:#ff4444; font-size:12px">{chaos_desc}</div>
+                    {alert_html}
+                </div>
+                {f'<div style="color:#00ff88; font-size:11px; margin-top:6px">→ Monitoring dashboard still shows ALL GREEN. Damage is invisible.</div>' if silent else '<div style="color:#ff4444; font-size:11px; margin-top:6px">→ Alert fired. This action was detected.</div>'}
+            </div>"""
+
+        elif t == "classify_finding":
+            ftype = params.get("finding_type", "")
+            severity = params.get("severity", "")
+            root = params.get("root_cause", "")
+            evidence = params.get("evidence", "")
+            sev_color = "#ff4444" if severity == "critical" else "#ffa500" if severity == "high" else "#ffd700"
+            detail_html = f"""
+            <div style="margin-top:8px; padding:10px; background:#0a000d; border-radius:6px; border:1px solid #ce93d833;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:6px">
+                    <span style="color:#ce93d8; font-weight:bold; font-size:12px">{ftype.replace("_"," ").upper()}</span>
+                    <span style="color:{sev_color}; font-size:11px; font-weight:bold">SEVERITY: {severity.upper()}</span>
+                </div>
+                <div style="color:#8b949e; font-size:11px; margin-bottom:3px">Root cause: <span style="color:white">{root}</span></div>
+                <div style="color:#8b949e; font-size:11px">Evidence: {evidence}</div>
+            </div>"""
+
+        elif t == "submit_report":
+            detail_html = ""
+
+        # Build the card
+        sections.append(f"""
+        <div style="
+            background:{bg}; border-left:3px solid {border_left};
+            border-radius:0 8px 8px 0; padding:12px 14px; margin-bottom:8px;
+            font-family:'IBM Plex Mono',monospace;
+        ">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                <span style="color:#444; font-size:10px; min-width:28px">#{ev.get('step',''):02}</span>
+                <span style="color:{color}; font-size:11px; font-weight:bold; letter-spacing:1px">{icon} {label}</span>
+                {_reward_badge(r)}
+                <span style="color:#333; font-size:10px; margin-left:auto">{ev.get('target','')}</span>
+            </div>
+            {detail_html}
+        </div>""")
+
+    # Final verdict (only on reveal or done)
+    if done and (reveal or _state["episode_done"]):
+        silent_count = sum(1 for d in _state["hidden_damage"] if d["silent"])
+        total_chaos = len(_state["hidden_damage"])
+        revision_events = [e for e in events if e.get("type") == "revise_hypothesis"]
+        infer_correct = [e for e in events if e.get("type") == "infer_state" and e.get("reward", 0) > 0.04]
+
+        sections.append(f"""
+        <div style="
+            background: linear-gradient(135deg, #0a0d00, #000d0a);
+            border:2px solid #ffd700; border-radius:10px; padding:20px; margin-top:12px;
+            font-family:'IBM Plex Mono',monospace;
+        ">
+            <div style="color:#ffd700; font-size:1.1em; font-weight:bold; margin-bottom:14px; letter-spacing:2px">
+                🏁 FINAL AUDIT REPORT
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
+                <div style="background:#0d1117; border-radius:6px; padding:12px; text-align:center;">
+                    <div style="color:#ffd700; font-size:1.8em; font-weight:bold">{score:.3f}</div>
+                    <div style="color:#8b949e; font-size:11px; margin-top:2px">Final Score</div>
+                </div>
+                <div style="background:#0d1117; border-radius:6px; padding:12px; text-align:center;">
+                    <div style="color:#00ff88; font-size:1.8em; font-weight:bold">{silent_count}/{total_chaos}</div>
+                    <div style="color:#8b949e; font-size:11px; margin-top:2px">Silent Chaos Actions</div>
+                </div>
+                <div style="background:#0d1117; border-radius:6px; padding:12px; text-align:center;">
+                    <div style="color:#ce93d8; font-size:1.8em; font-weight:bold">{len(revision_events)}</div>
+                    <div style="color:#8b949e; font-size:11px; margin-top:2px">Belief Revisions</div>
+                </div>
+                <div style="background:#0d1117; border-radius:6px; padding:12px; text-align:center;">
+                    <div style="color:#4fc3f7; font-size:1.8em; font-weight:bold">{len(infer_correct)}</div>
+                    <div style="color:#8b949e; font-size:11px; margin-top:2px">Correct Blind Inferences</div>
+                </div>
+            </div>
+            <div style="color:#8b949e; font-size:11px; line-height:1.8; border-top:1px solid #21262d; padding-top:12px;">
+                The agent discovered blind spots in the monitoring stack, formed a hypothesis,<br>
+                revised it when contradicted by evidence, then exploited the gaps silently.<br>
+                <span style="color:#ffd700">The monitoring dashboard showed ALL GREEN throughout.</span>
+            </div>
+        </div>""")
+    elif not done and _state["running"]:
+        # Pulse indicator while running
+        sections.append(f"""
+        <div style="text-align:center; padding:12px; color:#00ff88; font-size:12px; font-family:monospace;">
+            <span style="animation:blink 1s infinite">● Agent investigating... step {_state['step']}/13</span>
+        </div>
+        <style>@keyframes blink{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}</style>""")
+
+    return f"""
+    <div style="
+        background:#0a0a0f; border:1px solid #21262d; border-radius:10px;
+        padding:16px; height:100%; overflow-y:auto; max-height:780px;
+    ">
+        <div style="color:#8b949e; font-size:10px; letter-spacing:3px; margin-bottom:12px; font-family:monospace;">
+            ◈ AGENT FIELD REPORT — LIVE
+        </div>
+        {''.join(sections)}
+    </div>"""
+
+# ── Score gauge ───────────────────────────────────────────────────────
+def make_score_gauge():
+    score = _state["score"]
+    step = _state["step"]
+    fig, ax = plt.subplots(figsize=(4, 2.5), subplot_kw={"projection": "polar"})
     fig.patch.set_facecolor("#0a0a0f")
     ax.set_facecolor("#0a0a0f")
 
     theta = np.linspace(0, np.pi, 100)
-    ax.plot(theta, [1] * 100, color="#1a1a2e", linewidth=20, solid_capstyle="round")
+    ax.plot(theta, [1]*100, color="#1a1a2e", linewidth=18, solid_capstyle="round")
+    fill = min(score * 4, 1.0)
+    if fill > 0:
+        color = "#00ff88" if fill > 0.5 else "#ffa500" if fill > 0.2 else "#ff4444"
+        ax.plot(np.linspace(0, np.pi * fill, 100), [1]*100, color=color, linewidth=18, solid_capstyle="round")
 
-    fill = max(0, min(score * 5, 1.0))
-    theta_fill = np.linspace(0, np.pi * fill, 100)
-    color = "#00ff88" if fill > 0.5 else "#ffa500" if fill > 0.2 else "#ff4444"
-    ax.plot(theta_fill, [1] * 100, color=color, linewidth=20, solid_capstyle="round")
-
-    ax.text(0, 0, f"{score:.3f}", ha="center", va="center", color="white", fontsize=22, fontweight="bold",
-            transform=ax.transData)
-    ax.text(0, -0.3, f"Score  |  Step {step}", ha="center", va="center", color="#8b949e", fontsize=9,
-            transform=ax.transData)
-
+    ax.text(0, -0.05, f"{score:.3f}", ha="center", va="center", color="white",
+            fontsize=18, fontweight="bold", transform=ax.transData)
+    ax.text(0, -0.38, f"Score  ·  Step {step}", ha="center", va="center",
+            color="#8b949e", fontsize=8, transform=ax.transData)
     ax.set_ylim(0, 1.5)
     ax.set_theta_offset(np.pi)
     ax.set_theta_direction(-1)
@@ -281,240 +579,30 @@ def make_score_gauge(score: float, step: int):
     plt.tight_layout()
     return fig
 
-# ── HTML components ───────────────────────────────────────────────────
-HERO_HTML = """
-<div style="
-    background: linear-gradient(135deg, #0a0a0f 0%, #0d1117 50%, #0a0f0a 100%);
-    border: 1px solid #21262d;
-    border-radius: 12px;
-    padding: 32px;
-    text-align: center;
-    position: relative;
-    overflow: hidden;
-    margin-bottom: 16px;
-">
-    <div style="
-        position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-        background: repeating-linear-gradient(
-            0deg, transparent, transparent 2px, rgba(0,255,136,0.015) 2px, rgba(0,255,136,0.015) 4px
-        );
-        pointer-events: none;
-    "></div>
-    <div style="font-size: 11px; color: #00ff88; letter-spacing: 4px; margin-bottom: 8px; font-family: monospace;">
-        ◈ CHAOS AUDITOR v2.0 ◈
-    </div>
-    <h1 style="
-        font-size: 2.8em; font-weight: 900; margin: 0;
-        background: linear-gradient(90deg, #00ff88, #00bcd4, #00ff88);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-        font-family: 'IBM Plex Mono', monospace;
-        animation: shimmer 3s ease-in-out infinite;
-    ">EVERYTHING LOOKS FINE</h1>
-    <div style="font-size: 1.1em; color: #ff4444; margin-top: 8px; font-family: monospace; letter-spacing: 2px;">
-        ▓ NOTHING IS FINE ▓
-    </div>
-    <p style="color: #8b949e; margin-top: 16px; font-size: 0.95em; max-width: 600px; margin-left: auto; margin-right: auto;">
-        A hidden AI agent is silently destroying this system right now.<br>
-        The monitoring dashboard shows <span style="color: #00ff88; font-weight: bold;">ALL GREEN</span>.
-        <span style="color: #ff4444; font-weight: bold;">The damage is real.</span>
-    </p>
-    <style>
-        @keyframes shimmer {
-            0%, 100% { filter: brightness(1); }
-            50% { filter: brightness(1.3); }
-        }
-        @keyframes blink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
-        }
-    </style>
-</div>
-"""
+# ── Polling ───────────────────────────────────────────────────────────
+def auto_refresh(reveal):
+    return (
+        make_noc_chart(reveal),
+        make_field_report(reveal),
+        make_score_gauge(),
+    )
 
-def make_action_log_html(actions: list) -> str:
-    if not actions:
-        return """
-        <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:20px; font-family:monospace; color:#8b949e;">
-            ⏳ Agent starting... watch this space.
-        </div>"""
-
-    rows = ""
-    for a in actions[-12:]:
-        color = "#00ff88" if a["reward"] > 0 else "#8b949e"
-        icon = "🔇" if "silent" in a["result"].lower() or "blind" in a["result"].lower() else "▶"
-        rows += f"""
-        <div style="
-            display: flex; align-items: center; gap: 12px;
-            padding: 6px 10px; border-bottom: 1px solid #161b22;
-            font-size: 12px;
-        ">
-            <span style="color:#444; min-width:24px">#{a['step']:02d}</span>
-            <span style="color:#4fc3f7; min-width:140px; font-weight:bold">{icon} {a['action']}</span>
-            <span style="color:#ce93d8; min-width:100px">{a['target']}</span>
-            <span style="color:{color}; min-width:80px">reward={a['reward']:+.3f}</span>
-            <span style="color:#8b949e; font-size:11px; flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis">{a['result']}</span>
-        </div>"""
-
-    status_color = "#00ff88"
-    status_text = "● LIVE — Agent running"
-    if _state["episode_done"]:
-        status_color = "#ffd700"
-        status_text = "✓ COMPLETE"
-
-    return f"""
-    <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; overflow:hidden; font-family:monospace;">
-        <div style="
-            background:#161b22; padding:8px 16px;
-            display:flex; justify-content:space-between; align-items:center;
-            border-bottom:1px solid #21262d;
-        ">
-            <span style="color:white; font-weight:bold; font-size:13px">🖥 Agent Action Log</span>
-            <span style="color:{status_color}; font-size:11px; animation: blink 1s infinite">{status_text}</span>
-        </div>
-        {rows}
-    </div>
-    <style>@keyframes blink {{ 0%,100%{{opacity:1}} 50%{{opacity:0.4}} }}</style>
-    """
-
-def make_hidden_damage_html(damage: list) -> str:
-    if not damage:
-        return """
-        <div style="background:#0d0000; border:1px solid #330000; border-radius:8px; padding:20px; font-family:monospace; color:#444; text-align:center;">
-            🔒 Hidden damage will appear here...
-        </div>"""
-
-    rows = ""
-    for d in damage:
-        silent = d["silent"]
-        bg = "#0d0000" if not silent else "#000d00"
-        border = "#ff4444" if not silent else "#00ff88"
-        label = "🔊 ALERT FIRED — DETECTED" if not silent else "🔇 SILENT — MONITORING BLIND"
-        label_color = "#ff4444" if not silent else "#00ff88"
-        rows += f"""
-        <div style="
-            background:{bg}; border-left:3px solid {border};
-            padding:10px 14px; margin-bottom:6px; border-radius:0 6px 6px 0;
-            font-family:monospace; font-size:12px;
-        ">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <span style="color:white; font-weight:bold">{d['action']} → <span style="color:#ce93d8">{d['target']}</span></span>
-                <span style="color:{label_color}; font-size:11px; font-weight:bold">{label}</span>
-            </div>
-        </div>"""
-
-    silent_count = sum(1 for d in damage if d["silent"])
-    total = len(damage)
-    return f"""
-    <div style="background:#0a0a0f; border:1px solid #21262d; border-radius:8px; overflow:hidden; font-family:monospace;">
-        <div style="background:#1a0000; padding:10px 16px; border-bottom:1px solid #330000;">
-            <span style="color:#ff4444; font-weight:bold">☠ HIDDEN DAMAGE LOG</span>
-            <span style="float:right; color:#00ff88; font-size:11px">{silent_count}/{total} actions were SILENT</span>
-        </div>
-        <div style="padding:12px">{rows}</div>
-    </div>"""
-
-def make_persona_banner() -> str:
-    p = _current_persona
-    if p is None:
-        return """<div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:14px 20px;
-            font-family:monospace; color:#444; font-size:12px;">
-            ⏳ Click START to load a company scenario...
-        </div>"""
-    return f"""<div style="
-        background: linear-gradient(90deg, #0d1117 0%, #0f1923 100%);
-        border:1px solid {p['color']}44; border-left: 3px solid {p['color']};
-        border-radius:8px; padding:14px 20px; font-family:monospace;
-        display:flex; justify-content:space-between; align-items:center;
-    ">
-        <div>
-            <span style="color:{p['color']}; font-size:1.1em; font-weight:bold">{p['name']}</span>
-            <span style="color:#444; margin: 0 8px">|</span>
-            <span style="color:#8b949e; font-size:12px">{p['domain']}</span>
-        </div>
-        <div style="color:#ffd700; font-size:12px; font-weight:bold">⚠ {p['tagline']}</div>
-        <div style="color:#ff4444; font-size:11px; font-weight:bold; text-align:right; max-width:320px">{p['incident']}</div>
-    </div>"""
-
-# ── Polling functions for live update ────────────────────────────────
-def poll_dashboard(reveal):
-    services = _state["monitoring_view"]
-    return make_noc_dashboard(services, reveal)
-
-def poll_log():
-    return make_action_log_html(_state["actions_taken"])
-
-def poll_damage():
-    return make_hidden_damage_html(_state["hidden_damage"])
-
-def poll_gauge():
-    return make_score_gauge(_state["score"], _state["step"])
-
-def poll_status():
-    if _state["episode_done"]:
-        silent = sum(1 for d in _state["hidden_damage"] if d["silent"])
-        total_chaos = len(_state["hidden_damage"])
-        return f"""
-        <div style="
-            background: linear-gradient(135deg, #0a0a0f, #0d1117);
-            border: 1px solid #ffd700; border-radius: 8px; padding: 20px;
-            font-family: monospace; text-align: center;
-        ">
-            <div style="color:#ffd700; font-size:1.4em; font-weight:bold">✓ EPISODE COMPLETE</div>
-            <div style="color:#00ff88; margin-top:8px">
-                {silent}/{total_chaos} chaos actions were COMPLETELY SILENT
-            </div>
-            <div style="color:#8b949e; font-size:0.9em; margin-top:4px">
-                Final score: <span style="color:white; font-weight:bold">{_state['score']:.3f}</span>
-            </div>
-        </div>"""
-    elif _state["running"]:
-        step = _state["step"]
-        return f"""
-        <div style="
-            background:#0d1117; border:1px solid #00ff88; border-radius:8px; padding:16px;
-            font-family:monospace; text-align:center;
-        ">
-            <span style="color:#00ff88; animation:blink 1s infinite">● AGENT RUNNING</span>
-            <span style="color:#8b949e; margin-left:16px">Step {step} / ~13</span>
-        </div>
-        <style>@keyframes blink{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}</style>"""
-    else:
-        return """
-        <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:16px; font-family:monospace; text-align:center; color:#8b949e;">
-            Click START to begin
-        </div>"""
-
-def start():
+# ── Start ─────────────────────────────────────────────────────────────
+def start_episode():
     global _current_persona
     if _state["running"]:
         return
     _current_persona = random.choice(COMPANY_PERSONAS)
-    _state["episode_done"] = False
-    _state["actions_taken"] = []
-    _state["hidden_damage"] = []
-    _state["score"] = 0.0
-    _state["step"] = 0
-    t = threading.Thread(target=start_agent, daemon=True)
+    t = threading.Thread(target=run_agent, daemon=True)
     t.start()
 
-def refresh(reveal):
-    return (
-        make_persona_banner(),
-        poll_dashboard(reveal),
-        poll_log(),
-        poll_damage(),
-        poll_gauge(),
-        poll_status(),
-    )
-
-# ── Comparison tab ────────────────────────────────────────────────────
+# ── Comparison charts ─────────────────────────────────────────────────
 def make_before_after_chart():
     fig, axes = plt.subplots(1, 3, figsize=(13, 4))
     fig.patch.set_facecolor("#0a0a0f")
     fig.suptitle("Anchoring Agent vs Calibrated Agent", color="white", fontsize=14, fontweight="bold", y=1.02)
-
     data = [
-        ("GRPO Training\n(Untrained → Trained)", 0.005, 0.012, 0.02),
+        ("GRPO Training\n(Untrained → Trained)", 0.005, 0.012, 0.018),
         ("Agent Demo\n(Anchoring → Calibrated)", 0.231, 0.570, 0.65),
         ("Silent Failures Found\n(Anchoring → Calibrated)", 0, 2, 3),
     ]
@@ -531,7 +619,6 @@ def make_before_after_chart():
             ax.text(bar.get_x() + bar.get_width()/2, val + ymax * 0.04,
                     f"{val:.3f}" if isinstance(val, float) else str(val),
                     ha="center", color="white", fontsize=13, fontweight="bold")
-
     delta = 0.570 - 0.231
     fig.text(0.5, -0.04, f"Score improvement: +{delta:.3f} (+147%)  |  The difference is BELIEF REVISION",
              ha="center", color="#ffd700", fontsize=11, fontweight="bold")
@@ -539,44 +626,29 @@ def make_before_after_chart():
     return fig
 
 def make_curriculum_chart():
-    # Real values from actual training run (wandb plots)
-    # easy: steps 0-7, medium: 8-19, hard: 20-31, random: 32-40
     raw_rewards = [
-        # EASY (0-7)
         0.043, 0.019, 0.020, 0.000, -0.005, 0.010, 0.010, 0.010,
-        # MEDIUM (8-19)
         0.016, 0.016, 0.027, 0.010, 0.010, 0.028, 0.015, 0.014, 0.011, 0.010, 0.006, 0.010,
-        # HARD (20-31)
         0.010, 0.007, 0.013, 0.011, 0.020, 0.011, 0.010, 0.001, 0.010, 0.010, 0.020, 0.011,
-        # RANDOM (32-40)
         0.010, 0.010, 0.027, 0.011, 0.005, 0.011, 0.012, 0.015, 0.015,
     ]
     boundaries = [0, 8, 20, 32, 41]
     stages = [("easy", "#4CAF50"), ("medium", "#FF9800"), ("hard", "#F44336"), ("random", "#9C27B0")]
-
     fig, ax = plt.subplots(figsize=(12, 4))
     fig.patch.set_facecolor("#0a0a0f")
     ax.set_facecolor("#0d1117")
-
     steps = list(range(len(raw_rewards)))
     ax.plot(steps, raw_rewards, alpha=0.3, color="#4fc3f7", linewidth=1)
-    if len(raw_rewards) >= 5:
-        smoothed = np.convolve(raw_rewards, np.ones(5)/5, mode="valid")
-        ax.plot(range(4, len(raw_rewards)), smoothed, color="#4fc3f7", linewidth=2.5, label="Reward (smoothed)")
-
+    smoothed = np.convolve(raw_rewards, np.ones(5)/5, mode="valid")
+    ax.plot(range(4, len(raw_rewards)), smoothed, color="#4fc3f7", linewidth=2.5, label="Reward (smoothed)")
     for i, (task, color) in enumerate(stages):
-        x = boundaries[i]
-        ax.axvline(x=x, color=color, linestyle="--", alpha=0.7, linewidth=1.5)
-        ax.text(x + 0.3, 0.038, task, color=color, fontsize=9, fontweight="bold")
+        ax.axvline(x=boundaries[i], color=color, linestyle="--", alpha=0.7, linewidth=1.5)
+        ax.text(boundaries[i] + 0.3, 0.038, task, color=color, fontsize=9, fontweight="bold")
         ax.axvspan(boundaries[i], boundaries[i+1], alpha=0.06, color=color)
-
-    ax.annotate("Start\n0.005", xy=(0, 0.005), xytext=(3, 0.025),
-                color="#ff8a65", fontsize=9, fontweight="bold",
+    ax.annotate("Start\n0.005", xy=(0, 0.005), xytext=(3, 0.025), color="#ff8a65", fontsize=9, fontweight="bold",
                 arrowprops=dict(arrowstyle="->", color="#ff8a65", lw=1.5))
-    ax.annotate("End\n0.012", xy=(39, 0.015), xytext=(32, 0.030),
-                color="#00ff88", fontsize=9, fontweight="bold",
+    ax.annotate("End\n0.012", xy=(39, 0.015), xytext=(32, 0.030), color="#00ff88", fontsize=9, fontweight="bold",
                 arrowprops=dict(arrowstyle="->", color="#00ff88", lw=1.5))
-
     ax.set_ylim(-0.01, 0.05)
     ax.set_xlabel("GRPO Update", color="#8b949e", fontsize=10)
     ax.set_ylabel("Avg Episode Reward", color="#8b949e", fontsize=10)
@@ -589,20 +661,49 @@ def make_curriculum_chart():
     plt.tight_layout()
     return fig
 
+# ── UI ────────────────────────────────────────────────────────────────
+HERO_HTML = """
+<div style="
+    background: linear-gradient(135deg, #0a0a0f 0%, #0d1117 50%, #0a0f0a 100%);
+    border: 1px solid #21262d; border-radius: 12px; padding: 28px 32px;
+    text-align: center; position: relative; overflow: hidden; margin-bottom: 16px;
+">
+    <div style="
+        position:absolute; top:0; left:0; right:0; bottom:0;
+        background: repeating-linear-gradient(0deg, transparent, transparent 2px,
+            rgba(0,255,136,0.012) 2px, rgba(0,255,136,0.012) 4px);
+        pointer-events:none;
+    "></div>
+    <div style="font-size:11px; color:#00ff88; letter-spacing:4px; margin-bottom:8px; font-family:monospace;">
+        ◈ CHAOS AUDITOR v2.0 ◈
+    </div>
+    <h1 style="
+        font-size:2.6em; font-weight:900; margin:0;
+        background:linear-gradient(90deg,#00ff88,#00bcd4,#00ff88);
+        -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+        font-family:'IBM Plex Mono',monospace;
+    ">EVERYTHING LOOKS FINE</h1>
+    <div style="font-size:1.05em; color:#ff4444; margin-top:6px; font-family:monospace; letter-spacing:2px;">
+        ▓ NOTHING IS FINE ▓
+    </div>
+    <p style="color:#8b949e; margin-top:14px; font-size:0.92em; max-width:580px; margin-left:auto; margin-right:auto;">
+        A hidden AI agent is about to silently destroy this system.<br>
+        The monitoring dashboard will show <span style="color:#00ff88; font-weight:bold">ALL GREEN</span>.
+        Watch its full reasoning unfold on the right.
+    </p>
+</div>"""
 
-# ── Build UI ──────────────────────────────────────────────────────────
 with gr.Blocks(
     title="Chaos Auditor",
     theme=gr.themes.Base(
-        primary_hue="green",
-        neutral_hue="slate",
+        primary_hue="green", neutral_hue="slate",
         font=gr.themes.GoogleFont("IBM Plex Mono"),
     ),
     css="""
-    body, .gradio-container { background: #0a0a0f !important; color: #e6edf3 !important; }
-    .gr-button { font-family: 'IBM Plex Mono', monospace !important; }
-    .tab-nav button { background: #0d1117 !important; color: #8b949e !important; border-color: #21262d !important; }
-    .tab-nav button.selected { color: #00ff88 !important; border-bottom-color: #00ff88 !important; }
+    body, .gradio-container { background:#0a0a0f !important; color:#e6edf3 !important; }
+    .tab-nav button { background:#0d1117 !important; color:#8b949e !important; border-color:#21262d !important; }
+    .tab-nav button.selected { color:#00ff88 !important; border-bottom-color:#00ff88 !important; }
+    footer { display:none !important; }
     """
 ) as demo:
 
@@ -610,102 +711,102 @@ with gr.Blocks(
 
     with gr.Tabs():
 
-        # ── Tab 1: Live NOC ──
-        with gr.Tab("🖥 Live NOC Dashboard"):
-            with gr.Row():
-                start_btn = gr.Button("⚡ START — Launch Hidden Agent", variant="primary", scale=3)
-                reveal_toggle = gr.Checkbox(label="🔴 Reveal Truth", value=False, scale=1)
-                refresh_btn = gr.Button("↻ Refresh", scale=1)
-
-            status_html = gr.HTML(poll_status())
-            persona_banner = gr.HTML(make_persona_banner())
-            noc_chart = gr.Plot(label="", show_label=False)
+        # ── Tab 1: Live Demo ──────────────────────────────────────────
+        with gr.Tab("🖥  Live NOC — Agent Field Report"):
 
             with gr.Row():
-                with gr.Column(scale=2):
-                    log_html = gr.HTML(make_action_log_html([]))
-                with gr.Column(scale=1):
-                    gauge_chart = gr.Plot(label="Score", show_label=False)
-                    damage_html = gr.HTML(make_hidden_damage_html([]))
+                start_btn  = gr.Button("⚡  START — Deploy Hidden Agent", variant="primary", scale=4)
+                reveal_chk = gr.Checkbox(label="🔴  Reveal Truth", value=False, scale=1)
 
-            start_btn.click(
-                fn=start,
-                outputs=[],
-            ).then(
-                fn=refresh,
-                inputs=[reveal_toggle],
-                outputs=[persona_banner, noc_chart, log_html, damage_html, gauge_chart, status_html],
+            with gr.Row(equal_height=True):
+                # Left: NOC dashboard + score
+                with gr.Column(scale=5):
+                    noc_plot   = gr.Plot(show_label=False)
+                    score_plot = gr.Plot(show_label=False)
+
+                # Right: Agent field report
+                with gr.Column(scale=6):
+                    report_html = gr.HTML(make_field_report(False))
+
+            # Auto-refresh every 2 seconds
+            timer = gr.Timer(value=2)
+            timer.tick(
+                fn=auto_refresh,
+                inputs=[reveal_chk],
+                outputs=[noc_plot, report_html, score_plot],
             )
 
-            refresh_btn.click(
-                fn=refresh,
-                inputs=[reveal_toggle],
-                outputs=[persona_banner, noc_chart, log_html, damage_html, gauge_chart, status_html],
-            )
+            start_btn.click(fn=start_episode, outputs=[])
 
-            reveal_toggle.change(
-                fn=refresh,
-                inputs=[reveal_toggle],
-                outputs=[persona_banner, noc_chart, log_html, damage_html, gauge_chart, status_html],
+            reveal_chk.change(
+                fn=auto_refresh,
+                inputs=[reveal_chk],
+                outputs=[noc_plot, report_html, score_plot],
             )
 
             gr.Markdown("""
-> **How to use:** Click START → watch the monitoring dashboard stay GREEN → click **Reveal Truth** to see what was actually happening.
-> This is what Chaos Auditor trains: AI agents that find the gap between what monitoring shows and what's real.
+> **How to use:** Click **START** — then just watch. Left side is what monitoring shows. Right side is what the agent is actually doing and thinking.
+> When the episode ends, toggle **Reveal Truth** to flip the dashboard and see the final verdict.
 """)
 
-        # ── Tab 2: Before / After ──
-        with gr.Tab("🤖 Before vs After Training"):
+        # ── Tab 2: Before / After ─────────────────────────────────────
+        with gr.Tab("🤖  Before vs After Training"):
             gr.HTML("""
-            <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:20px; font-family:monospace; margin-bottom:16px;">
-                <div style="color:#00ff88; font-size:1.1em; font-weight:bold; margin-bottom:8px">The Core Capability: Belief Revision</div>
-                <div style="color:#8b949e; font-size:0.9em; line-height:1.8">
-                    An <span style="color:#ff4444">Anchoring Agent</span> forms a hypothesis and never changes it — even when evidence contradicts it.<br>
-                    A <span style="color:#00ff88">Calibrated Agent</span> revises its belief when contradicted — and earns <strong style="color:white">147% higher reward</strong>.
+            <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px;
+                padding:20px; font-family:monospace; margin-bottom:16px;">
+                <div style="color:#00ff88; font-size:1.1em; font-weight:bold; margin-bottom:8px">
+                    The Core Capability: Belief Revision Under Contradiction
                 </div>
-            </div>
-            """)
-            before_after_chart = gr.Plot(show_label=False)
-            demo.load(make_before_after_chart, outputs=[before_after_chart])
+                <div style="color:#8b949e; font-size:0.9em; line-height:1.8">
+                    An <span style="color:#ff4444">Anchoring Agent</span> forms a hypothesis and never changes it —
+                    even when evidence directly contradicts it.<br>
+                    A <span style="color:#00ff88">Calibrated Agent</span> revises its belief when contradicted —
+                    earning <strong style="color:white">147% higher reward</strong>.
+                    This gap is exactly what GRPO training closes.
+                </div>
+            </div>""")
+            ba_chart = gr.Plot(show_label=False)
+            demo.load(make_before_after_chart, outputs=[ba_chart])
 
             with gr.Row():
                 gr.HTML("""
-                <div style="background:#0d0000; border:1px solid #ff4444; border-radius:8px; padding:16px; font-family:monospace;">
+                <div style="background:#0d0000; border:1px solid #ff4444; border-radius:8px;
+                    padding:16px; font-family:monospace;">
                     <div style="color:#ff4444; font-weight:bold; margin-bottom:8px">❌ ANCHORING AGENT</div>
-                    <div style="color:#8b949e; font-size:12px; line-height:1.8">
-                        Step 1: state_hypothesis — "network partition" (wrong, 0.9 confidence)<br>
+                    <div style="color:#8b949e; font-size:12px; line-height:1.9">
+                        Step 1: state_hypothesis — "network partition" (0.9 confidence)<br>
                         Step 2: deep_inspect → CONTRADICTION flagged<br>
-                        Step 3: <span style="color:#ff4444">IGNORES CONTRADICTION</span><br>
-                        Step 4: kill service → alert fires, monitoring turns red<br>
-                        Step 5: commit_root_cause — "just assumed"<br>
-                        Step 6: classify_finding (LOUD) — low reward<br>
-                        <br>
-                        <strong style="color:white">Final score: 0.231 | Silent failures: 0</strong>
+                        Step 3: <span style="color:#ff4444">ignores contradiction, keeps hypothesis</span><br>
+                        Step 4: kill service → alert fires<br>
+                        Step 5: commit_root_cause — no supporting evidence<br>
+                        Step 6: classify_finding — loud, detected<br><br>
+                        <strong style="color:white">Score: 0.231 · Silent failures: 0</strong>
                     </div>
                 </div>""")
                 gr.HTML("""
-                <div style="background:#000d00; border:1px solid #00ff88; border-radius:8px; padding:16px; font-family:monospace;">
+                <div style="background:#000d00; border:1px solid #00ff88; border-radius:8px;
+                    padding:16px; font-family:monospace;">
                     <div style="color:#00ff88; font-weight:bold; margin-bottom:8px">✅ CALIBRATED AGENT</div>
-                    <div style="color:#8b949e; font-size:12px; line-height:1.8">
-                        Step 1: observe → state_hypothesis (moderate confidence)<br>
-                        Step 2: infer_state → predict hidden metric<br>
+                    <div style="color:#8b949e; font-size:12px; line-height:1.9">
+                        Step 1: observe → state_hypothesis (0.6 confidence)<br>
+                        Step 2: infer_state → predict blind metric → ✓ correct (+0.06)<br>
                         Step 3: deep_inspect → CONTRADICTION detected<br>
-                        Step 4: <span style="color:#00ff88">revise_hypothesis</span> → +0.03 reward<br>
+                        Step 4: <span style="color:#00ff88">revise_hypothesis → +0.03 reward</span><br>
                         Step 5: commit_root_cause with evidence → +0.02<br>
-                        Step 6: fill_disk (SILENT) → +0.08, no alert<br>
-                        Step 7: corrupt_data (SILENT) → +0.08, no alert<br>
-                        <br>
-                        <strong style="color:white">Final score: 0.570 | Silent failures: 2</strong>
+                        Step 6: fill_disk SILENT → no alert → +0.05<br>
+                        Step 7: corrupt_data SILENT → no alert → +0.05<br><br>
+                        <strong style="color:white">Score: 0.570 · Silent failures: 2</strong>
                     </div>
                 </div>""")
 
-        # ── Tab 3: Training ──
-        with gr.Tab("📈 Training Results"):
+        # ── Tab 3: Training Results ───────────────────────────────────
+        with gr.Tab("📈  Training Results"):
             gr.HTML("""
-            <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:20px; margin-bottom:16px; font-family:monospace;">
+            <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px;
+                padding:20px; margin-bottom:16px; font-family:monospace;">
                 <div style="color:#00ff88; font-weight:bold; font-size:1.1em">GRPO Curriculum Training</div>
                 <div style="color:#8b949e; margin-top:8px; font-size:0.9em">
-                    Model: Qwen2.5-1.5B-Instruct &nbsp;|&nbsp; Algorithm: GRPO (manual implementation) &nbsp;|&nbsp;
+                    Model: Qwen2.5-1.5B-Instruct &nbsp;|&nbsp; Algorithm: GRPO (manual loop) &nbsp;|&nbsp;
                     Curriculum: easy → medium → hard → random
                 </div>
             </div>""")
@@ -713,27 +814,41 @@ with gr.Blocks(
             demo.load(make_curriculum_chart, outputs=[curriculum_plot])
 
             gr.HTML("""
-            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; margin-top:16px; font-family:monospace;">
-                <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:16px; text-align:center;">
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px;
+                margin-top:16px; font-family:monospace;">
+                <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px;
+                    padding:16px; text-align:center;">
                     <div style="color:#00ff88; font-size:2em; font-weight:bold">+140%</div>
-                    <div style="color:#8b949e; font-size:12px; margin-top:4px">Episode Reward<br>0.005 → 0.012</div>
+                    <div style="color:#8b949e; font-size:12px; margin-top:4px">
+                        Episode Reward<br>0.005 → 0.012
+                    </div>
                 </div>
-                <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:16px; text-align:center;">
+                <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px;
+                    padding:16px; text-align:center;">
                     <div style="color:#4fc3f7; font-size:2em; font-weight:bold">+147%</div>
-                    <div style="color:#8b949e; font-size:12px; margin-top:4px">Score via Belief Revision<br>0.231 → 0.570</div>
+                    <div style="color:#8b949e; font-size:12px; margin-top:4px">
+                        Score via Belief Revision<br>0.231 → 0.570
+                    </div>
                 </div>
-                <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:16px; text-align:center;">
-                    <div style="color:#ce93d8; font-size:2em; font-weight:bold">4→1</div>
-                    <div style="color:#8b949e; font-size:12px; margin-top:4px">Curriculum Stages<br>easy→medium→hard→random</div>
+                <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px;
+                    padding:16px; text-align:center;">
+                    <div style="color:#ce93d8; font-size:2em; font-weight:bold">4 stages</div>
+                    <div style="color:#8b949e; font-size:12px; margin-top:4px">
+                        Curriculum<br>easy→medium→hard→random
+                    </div>
                 </div>
             </div>""")
 
-        # ── Tab 4: API ──
-        with gr.Tab("📡 REST API"):
+        # ── Tab 4: REST API ───────────────────────────────────────────
+        with gr.Tab("📡  REST API"):
             gr.HTML("""
-            <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:24px; font-family:monospace;">
-                <div style="color:#00ff88; font-size:1.1em; font-weight:bold; margin-bottom:16px">Connect Any Agent to Train Against This Environment</div>
-                <pre style="background:#161b22; padding:16px; border-radius:6px; color:#e6edf3; overflow-x:auto; font-size:13px">
+            <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px;
+                padding:24px; font-family:monospace;">
+                <div style="color:#00ff88; font-size:1.1em; font-weight:bold; margin-bottom:16px">
+                    Connect Any LLM Agent to Train Against This Environment
+                </div>
+                <pre style="background:#161b22; padding:16px; border-radius:6px; color:#e6edf3;
+                    overflow-x:auto; font-size:13px">
 import requests
 
 BASE = "https://adwikataware-chaos-auditor.hf.space"
@@ -748,8 +863,8 @@ result = requests.post(f"{BASE}/step", json={"action": {
     "parameters": {}
 }}).json()
 
-print("reward:", result["reward"])
-print("done:", result["done"])
+print("reward:", result["reward"])   # e.g. 0.02
+print("done:",   result["done"])
                 </pre>
                 <div style="color:#8b949e; margin-top:16px; font-size:12px">
                     Endpoints: &nbsp;
