@@ -72,4 +72,5 @@ Chaos Auditor trains the skill that makes agents reliable in all of these settin
 
 - **Environment + Demo**: [HuggingFace Space](https://huggingface.co/spaces/adwikataware/chaos-auditor)
 - **Training Notebook**: [Google Colab](https://colab.research.google.com/github/adwikataware/chaos-auditor/blob/main/training/chaos_auditor_grpo.ipynb)
+- **Training Run**: [Weights & Biases](https://wandb.ai/sohamtakale2905-mit-world-peace-university/chaos-auditor-grpo?nw=nwusersohamtakale2905)
 - **Code Repository**: [GitHub](https://github.com/adwikataware/chaos-auditor)
