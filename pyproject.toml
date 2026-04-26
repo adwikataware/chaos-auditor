@@ -15,8 +15,6 @@ dependencies = [
     "openai>=1.0.0",
 ]
 
-[project.scripts]
-server = "server.app:main"
 
 [tool.setuptools.packages.find]
 include = ["chaos_auditor*"]

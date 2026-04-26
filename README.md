@@ -290,7 +290,7 @@ python preflight.py   # 18 checks — validates env, all actions, contradiction 
 ```bash
 python eval_harness.py --mode scripted        # scripted fallback baseline
 python eval_harness.py --mode random_agent    # random action baseline
-python eval_harness.py --mode llm --model-path ./chaos-auditor-trained
+python eval_harness.py --mode llm --model-path ./checkpoints/random_final
 ```
 
 ### Training
