@@ -162,9 +162,12 @@ def run_agent():
 
             if action_type in ("fill_disk", "corrupt_data", "kill", "spike_traffic",
                                "add_latency", "partition_network", "exhaust_connections"):
+                # Silent = reward > 0.04 (environment gives +0.05 bonus for zero-alert damage)
+                # monitoring_status can lag due to threading; reward is the reliable signal
+                silent = r > 0.04
                 _state["hidden_damage"].append({
                     "action": action_type, "target": target,
-                    "silent": obs.monitoring_status == "ALL GREEN", "reward": r,
+                    "silent": silent, "reward": r,
                 })
 
             if obs.steps_remaining <= 0:
@@ -534,7 +537,7 @@ def make_field_report(reveal: bool) -> str:
             </div>"""
 
         elif t in ("fill_disk", "corrupt_data", "kill", "spike_traffic", "add_latency", "partition_network", "exhaust_connections"):
-            silent = ev.get("monitoring_status") == "ALL GREEN"
+            silent = r > 0.04  # reward > 0.04 means silent bonus was granted
             alert_html = _silent_badge(silent)
             chaos_desc = {
                 "fill_disk": f"Filled disk to 95% on <strong>{target}</strong>",
