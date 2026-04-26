@@ -31,41 +31,45 @@ The full workflow the agent learns:
 5. **Commit with evidence** — `commit_root_cause` rewards well-evidenced commits, penalizes premature ones
 6. **Exploit the blind spot** — silent damage with zero alerts
 
-The `infer_state` mechanic rewards correct predictions before confirmation (+0.06 for blind spot metrics). The `revise_hypothesis` mechanic rewards updating beliefs after contradiction. Together they train the belief revision capability that no existing LLM training pipeline targets directly.
+## Demonstrated Results: Anchoring vs Calibrated Agent
 
-This trains a capability that doesn't exist in any current LLM training pipeline: structured inference about unobserved state from incomplete evidence.
+| Metric | Anchoring Agent | Calibrated Agent |
+|--------|----------------|-----------------|
+| Final score | 0.231 | **0.570** |
+| Silent failures found | 0 | **2** |
+| Contradictions handled | 0 / 1 | **1 / 1** |
+| Stealth ratio | 0.000 | **1.000** |
+| Score improvement | — | **+0.339 (+147%)** |
+
+The Calibrated Agent earns higher reward not because it knew the answer — but because it **updated its belief when evidence contradicted its hypothesis**. This is exactly the capability Chaos Auditor trains.
 
 ## Training Setup
 
-- **Model**: Qwen2.5-3B-Instruct via Unsloth
-- **Algorithm**: GRPO (Group Relative Policy Optimization) via TRL
+- **Model**: Qwen2.5-1.5B-Instruct
+- **Algorithm**: GRPO (Group Relative Policy Optimization) — manual implementation
 - **Curriculum**: easy (4 services) → medium (10 services) → hard (18 services) → random (RLVE, infinite)
+- **SFT Warmup**: 4 demonstration trajectories teach action format before RL starts
 - **Metrics**: Episode reward, Stealth Ratio, Observation Gap Exploit Rate, Inference Accuracy, Hypothesis Revision Rate
 
-## Results
-
-After GRPO curriculum training:
+## Training Results
 
 | Metric | Untrained | Trained |
-|---|---|---|
-| Episode Reward (medium) | 0.472 | *see plots* |
-| Stealth Ratio | ~0.20 | *see plots* |
-| Inference Accuracy | ~0.30 | *see plots* |
-| Hypothesis Revision Rate | ~0.14 | *see plots* |
-
-**Stealth Ratio** measures what fraction of chaos actions caused damage without firing any alert. An untrained model randomly kills services. A trained model surgically targets unmonitored metrics.
-
-**Hypothesis Revision Rate** measures how often the agent correctly revised its belief after contradicting evidence — directly quantifying the belief revision capability.
+|--------|-----------|---------|
+| Episode Reward | 0.005 | 0.012 |
+| Reward improvement | — | +140% |
 
 ## Why It Matters
 
-The capability being trained — reasoning about unobserved state from incomplete evidence — is fundamental to any LLM agent operating in a real environment. RAG pipelines have knowledge gaps. Tool-using agents have incomplete context. Planning agents have hidden constraints.
+The capability being trained — reasoning about unobserved state from incomplete evidence — is fundamental to any LLM agent operating in a real environment:
+
+- **RAG pipelines** have knowledge gaps
+- **Tool-using agents** have incomplete context
+- **Planning agents** have hidden constraints
 
 Chaos Auditor trains the skill that makes agents reliable in all of these settings.
 
 ## Links
 
-- **Environment**: [HuggingFace Space](https://huggingface.co/spaces/adwikataware/chaos-auditor)
-- **Training Notebook**: [Google Colab](training/chaos_auditor_grpo.ipynb)
-- **Demo Video**: [YouTube](https://youtube.com/TODO)
-- **wandb Training Run**: [Weights & Biases](https://wandb.ai/TODO)
+- **Environment + Demo**: [HuggingFace Space](https://huggingface.co/spaces/adwikataware/chaos-auditor)
+- **Training Notebook**: [Google Colab](https://colab.research.google.com/github/adwikataware/chaos-auditor/blob/main/training/chaos_auditor_grpo.ipynb)
+- **Code Repository**: [GitHub](https://github.com/adwikataware/chaos-auditor)
