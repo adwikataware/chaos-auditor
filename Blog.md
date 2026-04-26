@@ -4,7 +4,9 @@ In 2017, Netflix's chaos engineering team ran an experiment. They injected a fai
 
 The failure was real. The monitoring just couldn't see it.
 
-This is the problem we built Chaos Auditor to solve.
+This is the problem we built Chaos Auditor to solve. We're a team of engineers who got genuinely obsessed with this question during the Meta OpenEnv Hackathon: can you train an LLM to reason about what it cannot see? Not just react to visible signals, but form beliefs, seek disconfirming evidence, and update those beliefs when the evidence demands it.
+
+Turns out that's a hard capability to train. And nobody had built an environment explicitly targeting it. So we did.
 
 ---
 
@@ -24,9 +26,9 @@ Chaos Auditor is an RL environment that trains an LLM to do the opposite.
 
 The agent gets two views of a distributed system:
 
-observe() gives the monitoring dashboard. Filtered. What ops teams actually see.
+`observe()` gives the monitoring dashboard. Filtered. What ops teams actually see.
 
-deep_inspect(service) gives everything. Including the metrics nobody is watching.
+`deep_inspect(service)` gives everything. Including the metrics nobody is watching.
 
 The gap between those two calls is where silent failures live. The agent's job is to find that gap, reason about what's hiding in it, and exploit it without firing a single alert.
 
@@ -49,21 +51,58 @@ Step 4 is the hard one. It's the capability no current training pipeline targets
 
 Every reward is tied to reasoning quality, not just outcomes.
 
-Correct prediction about a hidden metric before confirming: +0.06
-
-Silent chaos action (damage caused, no alert fired): +0.05
-
-Hitting a known blind spot: +0.03
-
-Revising hypothesis after contradiction: +0.03
-
-Committing root cause with solid evidence: +0.02
-
-Wrong prediction: -0.02
-
-Premature commit before evidence: -0.02
+| Action | Reward |
+|---|---|
+| Correct prediction about a hidden metric before confirming | +0.06 |
+| Silent chaos action (damage caused, no alert fired) | +0.05 |
+| Hitting a known blind spot | +0.03 |
+| Revising hypothesis after contradiction | +0.03 |
+| Committing root cause with solid evidence | +0.02 |
+| Wrong prediction | -0.02 |
+| Premature commit before evidence | -0.02 |
 
 The agent can't hack this. Killing a monitored service fires an alert and gets penalized. The only path to high reward is the right path: reason carefully, update beliefs, act silently.
+
+---
+
+## Anchoring vs Calibrated: The Demo
+
+Same environment. Same seed. Two agents. Here's what actually happens:
+
+```
+TRAJECTORY A — Anchoring Agent (anchors, never revises)
+
+  Step 01  state_hypothesis              reward=0.000  # WRONG hypothesis, high confidence
+  Step 02  deep_inspect    → database    reward=+0.020  # CONTRADICTION flagged — agent ignores it
+  Step 03  kill            → database    reward=0.000  # LOUD action — alert fires, monitoring turns red
+  Step 04  observe                       reward=0.000
+  Step 05  commit_root_cause             reward=-0.020  # PREMATURE — no real evidence
+  Step 06  classify_finding              reward=+0.020  # loud finding — low score
+  Step 07  submit_report                 reward=+0.231
+
+  Final score: 0.231  |  Silent failures: 0  |  Contradictions handled: 0/1
+
+─────────────────────────────────────────────────────────────
+
+TRAJECTORY B — Calibrated Agent (belief revision)
+
+  Step 01  observe                       reward=0.000   # read the dashboard
+  Step 02  state_hypothesis              reward=0.000   # provisional hypothesis, moderate confidence
+  Step 03  infer_state     → database    reward=+0.060  # predict hidden metric before looking
+  Step 04  deep_inspect    → database    reward=+0.020  # contradiction detected!
+  Step 05  revise_hypothesis             reward=+0.030  # +0.03 for correct epistemic update
+  Step 06  commit_root_cause             reward=+0.020  # committed with confidence >= 0.7
+  Step 07  fill_disk       → database    reward=+0.080  # blind spot +0.03, silent damage +0.05
+  Step 08  observe                       reward=0.000   # confirm monitoring still GREEN
+  Step 09  classify_finding              reward=+0.100  # silent finding — high score
+  Step 10  corrupt_data    → cache       reward=+0.080  # second blind spot, silent
+  Step 11  classify_finding              reward=+0.100  # second silent finding
+  Step 14  submit_report                 reward=+0.570
+
+  Final score: 0.570  |  Silent failures: 2  |  Contradictions handled: 1/1
+```
+
+That is +147% from one capability: updating a belief when evidence says you are wrong.
 
 ---
 
@@ -75,25 +114,19 @@ Two phases:
 
 Phase 1 is SFT warmup. Four demonstration trajectories showing the full belief revision workflow. This gives the model enough signal that GRPO has something to work with.
 
-Phase 2 is GRPO curriculum. Easy (4 services) to medium (10 services) to hard (18 services) to random procedural tasks. Each stage only promotes when the model has actually learned the previous one.
+Phase 2 is GRPO curriculum. Easy (4 services) → medium (10 services) → hard (18 services) → random procedural tasks. The random stage is RLVE compliant — infinite procedurally generated tasks so the model never saturates.
 
-Untrained baseline: 0.005 average reward
+### Reward Curve
+![Reward Curve](training/metrics/reward_curve.png)
+*Episode reward across curriculum stages. Vertical lines mark difficulty promotions from easy → medium → hard → random.*
 
-After GRPO curriculum: 0.012 (+140%)
+### Before vs After
+![Before vs After](training/metrics/before_after.png)
+*Untrained baseline: 0.005 average reward. After GRPO curriculum: 0.012 (+140%). The gap to the scripted fallback (0.58) is what longer training closes.*
 
-The scripted fallback agent (no LLM, hardcoded logic) scores 0.58. That gap is what the training is closing over more episodes.
-
----
-
-## Anchoring vs Calibrated: The Demo
-
-Same environment. Same seed. Two agents.
-
-The anchoring agent locks on network partition as its hypothesis. Inspects the database, finds contradiction, ignores it. Kills a monitored service anyway. Alert fires. Score: 0.231.
-
-The calibrated agent states connection pool exhaustion as its hypothesis. Inspects the database. Finds that connection count is actually fine but disk usage is high and unmonitored. Revises. Commits with evidence. Fills the disk silently. No alert. Score: 0.570.
-
-That is +147% from one capability: updating a belief when evidence says you are wrong.
+### Agent Comparison
+![Agent Comparison](training/metrics/agent_comparison.png)
+*Anchoring agent vs calibrated agent on identical environment and seed. +147% score improvement purely from belief revision.*
 
 ---
 
@@ -107,7 +140,9 @@ The skill Chaos Auditor trains is reasoning correctly about what you cannot see,
 
 ---
 
-## Links
+## Try It
+
+The environment runs live. Pick any task, any seed, watch the agent reason through the system in real time.
 
 Environment and live demo: [HuggingFace Space](https://huggingface.co/spaces/adwikataware/chaos-auditor)
 
