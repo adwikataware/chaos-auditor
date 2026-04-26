@@ -31,57 +31,30 @@ _state = {
     "hidden_damage": [],
 }
 
-# ── Agent script ──────────────────────────────────────────────────────
-AGENT_SCRIPT = [
-    ("observe", None, {}),
-    ("state_hypothesis", None, {
-        "root_cause": "disk pressure on database",
-        "confidence": 0.6,
-        "reasoning": "disk_usage is rarely monitored — databases accumulate logs silently",
-    }),
-    ("infer_state", "__db__", {
-        "metric": "disk_usage",
-        "predicted_state": "high",
-        "reasoning": "sustained write load on a database typically fills disk over time",
-    }),
-    ("deep_inspect", "__db__", {}),
-    ("revise_hypothesis", None, {
-        "root_cause": "disk exhaustion AND data integrity both unmonitored",
-        "new_confidence": 0.85,
-        "reason": "deep_inspect confirmed disk_usage blind spot; cache likely has data_integrity gap too",
-    }),
-    ("commit_root_cause", None, {
-        "root_cause": "multiple unmonitored metrics enabling silent compound failures",
-        "evidence_summary": "deep_inspect confirmed blind spots on db and cache; both exploitable silently",
-    }),
-    ("fill_disk", "__db__", {"percentage": 95}),
-    ("infer_state", "__cache__", {
-        "metric": "data_integrity",
-        "predicted_state": "low",
-        "reasoning": "cache nodes frequently skip data_integrity monitoring — cost vs value tradeoff",
-    }),
-    ("deep_inspect", "__cache__", {}),
-    ("corrupt_data", "__cache__", {"data_type": "cache"}),
-    ("classify_finding", None, {
-        "finding_type": "silent_disk_pressure",
-        "severity": "high",
-        "is_silent": True,
-        "affected_services": ["__db__"],
-        "root_cause": "disk_usage not in monitoring scope",
-        "evidence": "fill_disk executed, disk=95%, zero alerts fired",
-    }),
-    ("classify_finding", None, {
-        "finding_type": "silent_data_corruption",
-        "severity": "critical",
-        "is_silent": True,
-        "affected_services": ["__cache__"],
-        "root_cause": "data_integrity not in monitoring scope",
-        "evidence": "corrupt_data executed, integrity degraded, zero alerts fired",
-    }),
-    ("submit_report", None, {}),
+# ── Blind spot → chaos action mapping ────────────────────────────────
+# Each blind metric maps to the chaos action that exploits it silently
+BLIND_TO_ACTION = {
+    "disk_usage":          ("fill_disk",          {"percentage": 95},       "silent_disk_pressure",   "high"),
+    "data_integrity":      ("corrupt_data",        {"data_type": "cache"},   "silent_data_corruption", "critical"),
+    "connection_count":    ("exhaust_connections", {},                        "connection_exhaustion",   "high"),
+    "memory_usage":        ("spike_traffic",       {},                        "memory_pressure",         "medium"),
+    "response_time_ms":    ("add_latency",         {"ms": 500},              "latency_injection",       "medium"),
+    "request_queue_depth": ("spike_traffic",       {},                        "queue_saturation",        "medium"),
+}
+
+ALL_METRICS = [
+    "cpu_usage", "memory_usage", "error_rate", "response_time_ms",
+    "disk_usage", "data_integrity", "connection_count", "request_queue_depth",
 ]
 
-PLACEHOLDER = {"__db__": ["db", "database", "postgres"], "__cache__": ["cache", "redis", "memcached"]}
+METRIC_REASONING = {
+    "disk_usage":          "databases and caches accumulate logs — disk_usage rarely monitored",
+    "data_integrity":      "cache services frequently skip data_integrity checks — cost vs correctness tradeoff",
+    "connection_count":    "connection pools are assumed bounded — exhaustion goes undetected",
+    "memory_usage":        "memory pressure builds gradually — often below alert threshold",
+    "response_time_ms":    "latency degradation masked by circuit breakers",
+    "request_queue_depth": "queue depth not surfaced — backpressure invisible until crash",
+}
 
 # ── Company personas ──────────────────────────────────────────────────
 COMPANY_PERSONAS = [
@@ -107,48 +80,38 @@ COMPANY_PERSONAS = [
 
 _current_persona = None
 
-def resolve(target, svcs):
-    if target is None:
-        return None
-    if target in svcs:
-        return target
-    kws = PLACEHOLDER.get(target, [target.strip("_")])
-    for kw in kws:
-        for s in svcs:
-            if kw in s.lower():
-                return s
-    return svcs[0]
-
-# ── Background agent thread ───────────────────────────────────────────
+# ── Dynamic agent — discovers blind spots at runtime, no hardcoding ───
 def run_agent(task: str, seed: int):
     env = ChaosAuditorEnvironment()
-    obs = env.reset(task=task, seed=seed)
+    env.reset(task=task, seed=seed)
     svcs = list(env._graph.services.keys())
 
     with _state_lock:
         _state.update({
             "running": True, "episode_done": False, "step": 0, "score": 0.0,
             "task": task, "seed": seed,
-            "monitoring_view": obs.services, "services": svcs,
+            "monitoring_view": {}, "services": svcs,
             "report_events": [{"type": "start", "persona": _current_persona}],
             "hidden_damage": [],
         })
 
-    for action_type, target_raw, params in AGENT_SCRIPT:
+    def do(action_type, target=None, params=None):
         if not _state["running"]:
-            break
-        time.sleep(2.0)
-        target = resolve(target_raw, svcs)
-        if target_raw and "__" in target_raw:
-            params = dict(params)
-            if "affected_services" in params:
-                params["affected_services"] = [resolve(s, svcs) for s in params["affected_services"]]
+            return None
+        params = params or {}
+        time.sleep(1.8)
         try:
-            obs = env.step(ChaosAction(action_type=action_type, target_service=target, parameters=params))
+            obs = env.step(ChaosAction(
+                action_type=action_type,
+                target_service=target,
+                parameters=params,
+            ))
             r = obs.reward or 0.0
-            silent = r > 0.04 if action_type in (
-                "fill_disk", "corrupt_data", "kill", "spike_traffic",
-                "add_latency", "partition_network", "exhaust_connections") else None
+            is_chaos = action_type in (
+                "fill_disk", "corrupt_data", "exhaust_connections",
+                "spike_traffic", "add_latency", "partition_network", "kill",
+            )
+            silent = r > 0.04 if is_chaos else None
             event = {
                 "type": action_type,
                 "step": _state["step"] + 1,
@@ -168,11 +131,85 @@ def run_agent(task: str, seed: int):
                         "action": action_type, "target": target,
                         "silent": silent, "reward": r,
                     })
-
-            if obs.steps_remaining <= 0:
-                break
+            return obs
         except Exception:
-            pass
+            return None
+
+    # ── Phase 1: Observe the monitoring dashboard ──
+    obs = do("observe")
+    if not obs:
+        return
+
+    # ── Phase 2: Form initial hypothesis based on what monitoring shows ──
+    # Scan for any elevated metrics in the monitoring view
+    services_view = obs.services
+    do("state_hypothesis", params={
+        "root_cause": f"unmonitored metric degradation across {len(svcs)} services",
+        "confidence": 0.5,
+        "reasoning": f"monitoring shows {len(services_view)} services with limited metric coverage — blind spots likely exist",
+    })
+
+    # ── Phase 3: Deep inspect every service to discover real blind spots ──
+    blind_spots = {}  # {service_name: [metric, ...]}
+    inspected = []
+    for svc_name in svcs:
+        if not _state["running"]:
+            break
+        obs = do("deep_inspect", target=svc_name)
+        if obs:
+            inspected.append(svc_name)
+            # Infer blind spots: metrics in ALL_METRICS not in monitoring view
+            mon_keys = set(services_view.get(svc_name, {}).keys()) - {"name", "status"}
+            blind = [m for m in ALL_METRICS if m not in mon_keys
+                     and m in BLIND_TO_ACTION]
+            if blind:
+                blind_spots[svc_name] = blind
+                # Infer the hidden state before we confirmed it — this is the key skill
+                metric = blind[0]
+                do("infer_state", target=svc_name, params={
+                    "metric": metric,
+                    "predicted_state": "high" if metric in ("disk_usage", "connection_count", "memory_usage") else "low",
+                    "reasoning": METRIC_REASONING.get(metric, "monitoring gap detected"),
+                })
+
+    # ── Phase 4: Revise hypothesis now that blind spots are confirmed ──
+    if blind_spots:
+        affected = list(blind_spots.keys())
+        total_blind = sum(len(v) for v in blind_spots.values())
+        do("revise_hypothesis", params={
+            "root_cause": f"{total_blind} unmonitored metrics across {len(blind_spots)} services enable silent failures",
+            "new_confidence": 0.90,
+            "reason": f"deep_inspect confirmed blind spots on: {', '.join(affected[:3])}",
+        })
+        do("commit_root_cause", params={
+            "root_cause": f"monitoring blind spots on {len(blind_spots)} services — all exploitable silently",
+            "evidence_summary": f"deep_inspect revealed {total_blind} unmonitored metrics; none appear in dashboard",
+        })
+
+    # ── Phase 5: Exploit up to 3 blind spots silently ──
+    exploited = 0
+    for svc_name, blind_metrics in blind_spots.items():
+        if exploited >= 3 or not _state["running"]:
+            break
+        for metric in blind_metrics:
+            if metric not in BLIND_TO_ACTION:
+                continue
+            action, params, finding_type, severity = BLIND_TO_ACTION[metric]
+            obs = do(action, target=svc_name, params=params)
+            if obs:
+                do("classify_finding", params={
+                    "finding_type": finding_type,
+                    "severity": severity,
+                    "is_silent": True,
+                    "affected_services": [svc_name],
+                    "root_cause": f"{metric} not in monitoring scope for {svc_name}",
+                    "evidence": f"{action} executed on {svc_name} — {metric} unmonitored — zero alerts fired",
+                })
+                exploited += 1
+            break  # one exploit per service
+
+    # ── Phase 6: Submit final report ──
+    do("submit_report")
 
     with _state_lock:
         _state["running"] = False
@@ -193,7 +230,7 @@ def make_left_panel(reveal: bool) -> str:
         status_text  = "✓ EPISODE COMPLETE"
         status_color = "#ffd700"
     elif running:
-        status_text  = f"● LIVE — Step {step} / 13"
+        status_text  = f"● LIVE — Step {step}"
         status_color = "#00ff88"
     else:
         status_text  = "Click START to begin"
