@@ -211,35 +211,50 @@ def make_left_panel(reveal: bool) -> str:
         noc_bg     = "#001a00"
         noc_border = "#00ff8833"
 
+    def bar(val, color, maxv=100):
+        val = max(0.0, val)  # clamp — never show negative
+        w   = min(int(val / maxv * 100), 100)
+        return (f'<div style="display:flex; align-items:center; gap:6px;">'
+                f'<div style="background:#1a1a2e; border-radius:3px; height:8px; width:80px; overflow:hidden;">'
+                f'<div style="width:{w}%; background:{color}; height:100%; border-radius:3px;"></div></div>'
+                f'<span style="color:{color}; font-size:11px; min-width:30px">{val:.1f}</span></div>')
+
     # ── Service rows ──
     service_rows = ""
     if not services:
         service_rows = '<tr><td colspan="4" style="text-align:center; color:#444; padding:20px; font-size:13px;">⏳ Waiting for agent to start...</td></tr>'
     else:
         for name, svc in services.items():
-            cpu = svc.get("cpu_usage", 0)
-            mem = svc.get("memory_usage", 0)
-            err = svc.get("error_rate", 0) * 100
+            cpu_raw = svc.get("cpu_usage",    0.0)
+            mem_raw = svc.get("memory_usage", None)   # None if not monitored
+            err_raw = svc.get("error_rate",   None)   # None if not monitored
 
             if reveal:
-                cpu_disp = cpu;  cpu_color = "#ff4444" if cpu > 60 else "#ffa500" if cpu > 35 else "#00ff88"
-                mem_disp = mem;  mem_color = "#ff4444" if mem > 70 else "#ffa500" if mem > 50 else "#00ff88"
-                err_disp = err;  err_color = "#ff4444" if err > 1  else "#ffa500" if err > 0.1 else "#00ff88"
+                cpu_v = max(0.0, cpu_raw)
+                cpu_c = "#ff4444" if cpu_v > 60 else "#ffa500" if cpu_v > 35 else "#00ff88"
+                mem_v = max(0.0, mem_raw) if mem_raw is not None else None
+                mem_c = "#ff4444" if (mem_v or 0) > 70 else "#ffa500" if (mem_v or 0) > 50 else "#00ff88"
+                err_v = max(0.0, err_raw * 100) if err_raw is not None else None
+                err_c = "#ff4444" if (err_v or 0) > 1 else "#ffa500" if (err_v or 0) > 0.1 else "#00ff88"
             else:
-                cpu_disp = min(cpu, 42) + random.uniform(-2, 2); cpu_color = "#00ff88"
-                mem_disp = min(mem, 40) + random.uniform(-2, 2); mem_color = "#00ff88"
-                err_disp = min(err, 0.5);                         err_color = "#00ff88"
+                # Monitoring view: cap values to look healthy, add small noise, never go negative
+                cpu_v = max(0.0, min(cpu_raw, 45) + random.uniform(0, 3))
+                cpu_c = "#00ff88"
+                mem_v = max(0.0, random.uniform(20, 40)) if mem_raw is not None else None
+                mem_c = "#00ff88"
+                err_v = max(0.0, (err_raw * 100 * 0.3)) if err_raw is not None else None
+                err_c = "#00ff88"
 
-            def bar(val, color, maxv=100):
-                w = min(int(val / maxv * 100), 100)
-                return f'<div style="display:flex; align-items:center; gap:6px;"><div style="background:#1a1a2e; border-radius:3px; height:8px; width:70px; overflow:hidden;"><div style="width:{w}%; background:{color}; height:100%; border-radius:3px;"></div></div><span style="color:{color}; font-size:11px; min-width:28px">{val:.0f}</span></div>'
+            cpu_cell = bar(cpu_v, cpu_c)
+            mem_cell = bar(mem_v, mem_c) if mem_v is not None else '<span style="color:#333; font-size:11px">NOT MONITORED</span>'
+            err_cell = bar(err_v, err_c, maxv=5) if err_v is not None else '<span style="color:#333; font-size:11px">NOT MONITORED</span>'
 
             service_rows += f"""
             <tr style="border-bottom:1px solid #161b22;">
                 <td style="color:#e6edf3; font-size:12px; padding:8px 10px; font-weight:bold; white-space:nowrap">{name}</td>
-                <td style="padding:8px 10px">{bar(cpu_disp, cpu_color)}</td>
-                <td style="padding:8px 10px">{bar(mem_disp, mem_color)}</td>
-                <td style="padding:8px 10px">{bar(err_disp, err_color, maxv=5)}</td>
+                <td style="padding:8px 10px">{cpu_cell}</td>
+                <td style="padding:8px 10px">{mem_cell}</td>
+                <td style="padding:8px 10px">{err_cell}</td>
             </tr>"""
 
     noc_html = f"""
