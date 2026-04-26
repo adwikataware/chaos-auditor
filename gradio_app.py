@@ -23,6 +23,8 @@ _state = {
     "episode_done": False,
     "step": 0,
     "score": 0.0,
+    "task": "easy",
+    "seed": 42,
     "monitoring_view": {},
     "services": [],
     "report_events": [],
@@ -118,14 +120,15 @@ def resolve(target, svcs):
     return svcs[0]
 
 # ── Background agent thread ───────────────────────────────────────────
-def run_agent():
+def run_agent(task: str, seed: int):
     env = ChaosAuditorEnvironment()
-    obs = env.reset(task="easy", seed=42)
+    obs = env.reset(task=task, seed=seed)
     svcs = list(env._graph.services.keys())
 
     with _state_lock:
         _state.update({
             "running": True, "episode_done": False, "step": 0, "score": 0.0,
+            "task": task, "seed": seed,
             "monitoring_view": obs.services, "services": svcs,
             "report_events": [{"type": "start", "persona": _current_persona}],
             "hidden_damage": [],
@@ -298,7 +301,7 @@ def make_left_panel(reveal: bool) -> str:
         padding:14px 16px; font-family:'IBM Plex Mono',monospace;">
         <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
             <span style="color:#8b949e; font-size:10px; letter-spacing:2px">LIVE SCORE</span>
-            <span style="color:{s_color}; font-size:10px">task=easy · seed=42</span>
+            <span style="color:{s_color}; font-size:10px">task={_state['task']} · seed={_state['seed']}</span>
         </div>
         <div style="color:{s_color}; font-size:2.2em; font-weight:bold; text-align:center; margin-bottom:8px">{score:.4f}</div>
         <div style="background:#1a1a2e; border-radius:4px; height:5px; overflow:hidden; margin-bottom:10px;">
@@ -407,7 +410,7 @@ def make_field_report(reveal: bool) -> str:
                 <span style="color:#555; margin:0 8px">|</span>
                 <span style="color:#8b949e; font-size:12px">{p['domain']}</span>
             </div>
-            <span style="color:#ffd700; font-size:11px; font-weight:bold">⚠ scenario: easy · seed 42</span>
+            <span style="color:#ffd700; font-size:11px; font-weight:bold">⚠ scenario: {_state['task']} · seed {_state['seed']}</span>
         </div>
         <div style="color:#ff444488; font-size:11px; margin-top:6px; font-style:italic">{p['incident']}</div>
     </div>""")
@@ -728,13 +731,14 @@ def auto_refresh(reveal):
     )
 
 # ── Start ─────────────────────────────────────────────────────────────
-def start_episode():
+def start_episode(task: str, seed_str: str):
     global _current_persona
+    seed = int(seed_str) if str(seed_str).isdigit() else random.randint(1, 999)
     with _state_lock:
         if _state["running"]:
             return
         _current_persona = random.choice(COMPANY_PERSONAS)
-    t = threading.Thread(target=run_agent, daemon=True)
+    t = threading.Thread(target=run_agent, args=(task, seed), daemon=True)
     t.start()
 
 # ── Comparison charts ─────────────────────────────────────────────────
@@ -857,7 +861,16 @@ with gr.Blocks(
         with gr.Tab("🖥  Live NOC — Agent Field Report"):
 
             with gr.Row():
-                start_btn  = gr.Button("⚡  START — Deploy Hidden Agent", variant="primary", scale=4)
+                task_dd   = gr.Dropdown(
+                    choices=["easy", "medium", "hard", "random"],
+                    value="easy",
+                    label="Task",
+                    scale=1,
+                    info="easy=4 services · medium=10 · hard=18 · random=procedural",
+                )
+                seed_box  = gr.Textbox(value="42", label="Seed", scale=1,
+                                       info="Any integer — determines topology & blind spots")
+                start_btn  = gr.Button("⚡  START — Deploy Hidden Agent", variant="primary", scale=3)
                 reveal_chk = gr.Checkbox(label="🔴  Reveal Truth", value=False, scale=1)
 
             with gr.Row():
@@ -873,7 +886,7 @@ with gr.Blocks(
                 outputs=[left_html, report_html],
             )
 
-            start_btn.click(fn=start_episode, outputs=[])
+            start_btn.click(fn=start_episode, inputs=[task_dd, seed_box], outputs=[])
 
             reveal_chk.change(
                 fn=auto_refresh,
