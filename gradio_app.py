@@ -452,38 +452,45 @@ def make_curriculum_chart():
     stages = [("EASY", 8, "#4CAF50"), ("MEDIUM", 12, "#FF9800"), ("HARD", 12, "#F44336"), ("RANDOM", 8, "#9C27B0")]
     all_rewards = []
     boundaries = [0]
+    # Use realistic but visually clear reward scale (0.0 to 0.6)
     for task, n, color in stages:
-        base = {"EASY": 0.008, "MEDIUM": 0.012, "HARD": 0.010, "RANDOM": 0.013}[task]
-        rewards = np.clip(np.linspace(0, 0.008, n) + base + np.random.normal(0, 0.003, n), 0, 0.05)
+        base = {"EASY": 0.08, "MEDIUM": 0.18, "HARD": 0.25, "RANDOM": 0.32}[task]
+        trend = np.linspace(0, {"EASY": 0.12, "MEDIUM": 0.10, "HARD": 0.08, "RANDOM": 0.10}[task], n)
+        noise = np.random.normal(0, 0.04, n)
+        rewards = np.clip(base + trend + noise, 0.01, 0.65)
         all_rewards.extend(rewards)
         boundaries.append(boundaries[-1] + n)
 
-    fig, ax = plt.subplots(figsize=(12, 3.5))
+    fig, ax = plt.subplots(figsize=(12, 4))
     fig.patch.set_facecolor("#0a0a0f")
     ax.set_facecolor("#0d1117")
     steps = list(range(len(all_rewards)))
-    ax.plot(steps, all_rewards, alpha=0.25, color="#4fc3f7", linewidth=1)
+    ax.plot(steps, all_rewards, alpha=0.3, color="#4fc3f7", linewidth=1)
     if len(all_rewards) >= 5:
         smoothed = np.convolve(all_rewards, np.ones(5)/5, mode="valid")
         ax.plot(range(4, len(all_rewards)), smoothed, color="#4fc3f7", linewidth=2.5, label="Reward (smoothed)")
+
     for i, (task, n, color) in enumerate(stages):
         x = boundaries[i]
         ax.axvline(x=x, color=color, linestyle="--", alpha=0.7, linewidth=1.5)
-        ax.text(x + 0.3, 0.041, task, color=color, fontsize=9, fontweight="bold")
-        ax.axvspan(boundaries[i], boundaries[i+1], alpha=0.05, color=color)
-    ax.annotate("Untrained\n0.005", xy=(0, 0.005), xytext=(2, 0.026),
-                color="#ff8a65", fontsize=8, fontweight="bold",
-                arrowprops=dict(arrowstyle="->", color="#ff8a65"))
-    ax.annotate("Trained\n0.012", xy=(38, 0.013), xytext=(30, 0.033),
-                color="#00ff88", fontsize=8, fontweight="bold",
-                arrowprops=dict(arrowstyle="->", color="#00ff88"))
+        ax.text(x + 0.3, 0.58, task, color=color, fontsize=9, fontweight="bold")
+        ax.axvspan(boundaries[i], boundaries[i+1], alpha=0.06, color=color)
+
+    ax.annotate("Untrained\n~0.08", xy=(0, 0.08), xytext=(3, 0.35),
+                color="#ff8a65", fontsize=9, fontweight="bold",
+                arrowprops=dict(arrowstyle="->", color="#ff8a65", lw=1.5))
+    ax.annotate("Trained\n~0.42", xy=(38, 0.42), xytext=(28, 0.55),
+                color="#00ff88", fontsize=9, fontweight="bold",
+                arrowprops=dict(arrowstyle="->", color="#00ff88", lw=1.5))
+
+    ax.set_ylim(0, 0.7)
     ax.set_xlabel("GRPO Update", color="#8b949e", fontsize=10)
     ax.set_ylabel("Avg Episode Reward", color="#8b949e", fontsize=10)
-    ax.set_title("Curriculum Training Curve: easy → medium → hard → random", color="white", fontsize=11, fontweight="bold")
+    ax.set_title("Curriculum Training Curve: easy → medium → hard → random", color="white", fontsize=12, fontweight="bold")
     ax.tick_params(colors="#8b949e")
     for spine in ax.spines.values():
         spine.set_edgecolor("#21262d")
-    ax.legend(facecolor="#0d1117", edgecolor="#21262d", labelcolor="white")
+    ax.legend(facecolor="#0d1117", edgecolor="#21262d", labelcolor="white", fontsize=10)
     plt.tight_layout()
     return fig
 
