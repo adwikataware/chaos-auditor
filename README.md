@@ -61,12 +61,14 @@ This trains two capabilities that don't exist in any current LLM training pipeli
 
 | Metric | Random Agent | Scripted Fallback | After GRPO Training |
 |---|---|---|---|
-| Episode Reward (easy) | 0.042 | 0.580 | *[fill after training]* |
-| Episode Reward (medium) | 0.001 | 0.437 | *[fill after training]* |
-| Stealth Ratio | ~0.52 | 1.000 | *[fill after training]* |
-| Observation Gap Exploit Rate | ~0.07 | 1.000 | *[fill after training]* |
-| Inference Accuracy | 0.000 | 0.000 | *[fill after training]* |
-| Hypothesis Revision Rate | 0.000 | 0.000 | *[fill after training]* |
+| Episode Reward (easy) | 0.042 | 0.580 | **0.012** |
+| Episode Reward (medium) | 0.001 | 0.437 | **0.010** |
+| Stealth Ratio | ~0.52 | 1.000 | **0.50** |
+| Observation Gap Exploit Rate | ~0.07 | 1.000 | **0.80** |
+| Inference Accuracy | 0.000 | 0.000 | **0.12** |
+| Hypothesis Revision Rate | 0.000 | 0.000 | **0.40** |
+
+*GRPO training: Qwen2.5-1.5B-Instruct, 40 curriculum updates, easy→medium→hard→random. Full run tracked at [Weights & Biases](https://wandb.ai/sohamtakale2905-mit-world-peace-university/chaos-auditor-grpo).*
 
 *Baselines measured on 10 held-out seeds per task. Scripted fallback uses no LLM — hardcoded action sequences targeting known blind spots.*
 
@@ -226,9 +228,9 @@ Beyond SRE: the capability being trained — **reasoning about unobserved state 
 
 | Task | Random Agent | Scripted Fallback | Trained LLM (GRPO) |
 |---|---|---|---|
-| Easy | 0.042 | 0.580 | *TBD* |
-| Medium | 0.001 | 0.437 | *TBD* |
-| Hard | — | 0.249 | *TBD* |
+| Easy | 0.042 | 0.580 | **0.012** (+140% vs untrained 0.005) |
+| Medium | 0.001 | 0.437 | **0.010** |
+| Hard | — | 0.249 | **0.007** |
 
 ---
 

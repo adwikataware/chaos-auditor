@@ -17,6 +17,7 @@ from chaos_auditor.server.environment import ChaosAuditorEnvironment
 from chaos_auditor.models import ChaosAction
 
 # ── Shared state ──────────────────────────────────────────────────────
+_state_lock = threading.Lock()
 _state = {
     "running": False,
     "episode_done": False,
@@ -24,9 +25,8 @@ _state = {
     "score": 0.0,
     "monitoring_view": {},
     "services": [],
-    # Field report sections — each is a list of event dicts appended as agent acts
-    "report_events": [],   # all events in order for the living document
-    "hidden_damage": [],   # chaos actions only
+    "report_events": [],
+    "hidden_damage": [],
 }
 
 # ── Agent script ──────────────────────────────────────────────────────
@@ -126,12 +126,13 @@ def run_agent():
     obs = env.reset(task="easy", seed=42)
     svcs = list(env._graph.services.keys())
 
-    _state.update({
-        "running": True, "episode_done": False, "step": 0, "score": 0.0,
-        "monitoring_view": obs.services, "services": svcs,
-        "report_events": [{"type": "start", "persona": _current_persona}],
-        "hidden_damage": [],
-    })
+    with _state_lock:
+        _state.update({
+            "running": True, "episode_done": False, "step": 0, "score": 0.0,
+            "monitoring_view": obs.services, "services": svcs,
+            "report_events": [{"type": "start", "persona": _current_persona}],
+            "hidden_damage": [],
+        })
 
     for action_type, target_raw, params in AGENT_SCRIPT:
         if not _state["running"]:
@@ -145,38 +146,37 @@ def run_agent():
         try:
             obs = env.step(ChaosAction(action_type=action_type, target_service=target, parameters=params))
             r = obs.reward or 0.0
-            _state["score"] += r
-            _state["step"] += 1
-            _state["monitoring_view"] = obs.services
-
+            silent = r > 0.04 if action_type in (
+                "fill_disk", "corrupt_data", "kill", "spike_traffic",
+                "add_latency", "partition_network", "exhaust_connections") else None
             event = {
                 "type": action_type,
-                "step": _state["step"],
+                "step": _state["step"] + 1,
                 "target": target or "—",
                 "reward": r,
                 "result": obs.action_result,
                 "monitoring_status": obs.monitoring_status,
                 "params": params,
             }
-            _state["report_events"].append(event)
-
-            if action_type in ("fill_disk", "corrupt_data", "kill", "spike_traffic",
-                               "add_latency", "partition_network", "exhaust_connections"):
-                # Silent = reward > 0.04 (environment gives +0.05 bonus for zero-alert damage)
-                # monitoring_status can lag due to threading; reward is the reliable signal
-                silent = r > 0.04
-                _state["hidden_damage"].append({
-                    "action": action_type, "target": target,
-                    "silent": silent, "reward": r,
-                })
+            with _state_lock:
+                _state["score"] += r
+                _state["step"] += 1
+                _state["monitoring_view"] = obs.services
+                _state["report_events"].append(event)
+                if silent is not None:
+                    _state["hidden_damage"].append({
+                        "action": action_type, "target": target,
+                        "silent": silent, "reward": r,
+                    })
 
             if obs.steps_remaining <= 0:
                 break
         except Exception:
             pass
 
-    _state["running"] = False
-    _state["episode_done"] = True
+    with _state_lock:
+        _state["running"] = False
+        _state["episode_done"] = True
 
 # ── Left panel: NOC dashboard + score — pure HTML, no matplotlib ──────
 def make_left_panel(reveal: bool) -> str:
@@ -733,9 +733,10 @@ def auto_refresh(reveal):
 # ── Start ─────────────────────────────────────────────────────────────
 def start_episode():
     global _current_persona
-    if _state["running"]:
-        return
-    _current_persona = random.choice(COMPANY_PERSONAS)
+    with _state_lock:
+        if _state["running"]:
+            return
+        _current_persona = random.choice(COMPANY_PERSONAS)
     t = threading.Thread(target=run_agent, daemon=True)
     t.start()
 
