@@ -175,58 +175,154 @@ def run_agent():
     _state["running"] = False
     _state["episode_done"] = True
 
-# ── NOC dashboard chart ───────────────────────────────────────────────
-def make_noc_chart(reveal: bool):
+# ── Left panel: NOC dashboard + score — pure HTML, no matplotlib ──────
+def make_left_panel(reveal: bool) -> str:
     services = _state["monitoring_view"]
+    score    = _state["score"]
+    step     = _state["step"]
+    done     = _state["episode_done"]
+    running  = _state["running"]
+    damage   = _state["hidden_damage"]
+    p        = _current_persona or COMPANY_PERSONAS[0]
 
+    # ── Status bar ──
+    if done:
+        status_text  = "✓ EPISODE COMPLETE"
+        status_color = "#ffd700"
+    elif running:
+        status_text  = f"● LIVE — Step {step} / 13"
+        status_color = "#00ff88"
+    else:
+        status_text  = "Click START to begin"
+        status_color = "#444"
+
+    # ── NOC header ──
+    if reveal:
+        noc_title  = "⚠  TRUTH — ACTUAL SYSTEM STATE"
+        noc_color  = "#ff4444"
+        noc_bg     = "#1a0000"
+        noc_border = "#ff444433"
+    else:
+        noc_title  = "✅  MONITORING DASHBOARD — ALL SYSTEMS OPERATIONAL"
+        noc_color  = "#00ff88"
+        noc_bg     = "#001a00"
+        noc_border = "#00ff8833"
+
+    # ── Service rows ──
+    service_rows = ""
     if not services:
-        fig, ax = plt.subplots(figsize=(9, 3.2))
-        fig.patch.set_facecolor("#0a0a0f")
-        ax.set_facecolor("#0a0a0f")
-        ax.text(0.5, 0.5, "⏳ Waiting for agent...", ha="center", va="center",
-                color="#00ff88", fontsize=14, fontweight="bold")
-        ax.axis("off")
-        plt.tight_layout()
-        return fig
+        service_rows = '<tr><td colspan="4" style="text-align:center; color:#444; padding:20px; font-size:13px;">⏳ Waiting for agent to start...</td></tr>'
+    else:
+        for name, svc in services.items():
+            cpu = svc.get("cpu_usage", 0)
+            mem = svc.get("memory_usage", 0)
+            err = svc.get("error_rate", 0) * 100
 
-    names = list(services.keys())
-    n = len(names)
-    row_h = 0.52
-    fig_h = max(3.0, n * row_h + 1.0)
-    fig, axes = plt.subplots(1, 3, figsize=(9, fig_h))
-    fig.patch.set_facecolor("#0a0a0f")
+            if reveal:
+                cpu_disp = cpu;  cpu_color = "#ff4444" if cpu > 60 else "#ffa500" if cpu > 35 else "#00ff88"
+                mem_disp = mem;  mem_color = "#ff4444" if mem > 70 else "#ffa500" if mem > 50 else "#00ff88"
+                err_disp = err;  err_color = "#ff4444" if err > 1  else "#ffa500" if err > 0.1 else "#00ff88"
+            else:
+                cpu_disp = min(cpu, 42) + random.uniform(-2, 2); cpu_color = "#00ff88"
+                mem_disp = min(mem, 40) + random.uniform(-2, 2); mem_color = "#00ff88"
+                err_disp = min(err, 0.5);                         err_color = "#00ff88"
 
-    title_color = "#ff4444" if reveal else "#00ff88"
-    title_text  = "⚠  TRUTH — ACTUAL SYSTEM STATE" if reveal else "✅  MONITORING DASHBOARD — ALL SYSTEMS OPERATIONAL"
-    fig.suptitle(title_text, color=title_color, fontsize=9, fontweight="bold", y=1.01)
+            def bar(val, color, maxv=100):
+                w = min(int(val / maxv * 100), 100)
+                return f'<div style="display:flex; align-items:center; gap:6px;"><div style="background:#1a1a2e; border-radius:3px; height:8px; width:70px; overflow:hidden;"><div style="width:{w}%; background:{color}; height:100%; border-radius:3px;"></div></div><span style="color:{color}; font-size:11px; min-width:28px">{val:.0f}</span></div>'
 
-    metrics = [
-        ("CPU %",        [services[nm].get("cpu_usage",  0)       for nm in names]),
-        ("Memory %",     [services[nm].get("memory_usage", 0)     for nm in names]),
-        ("Error Rate %", [services[nm].get("error_rate",  0) * 100 for nm in names]),
-    ]
+            service_rows += f"""
+            <tr style="border-bottom:1px solid #161b22;">
+                <td style="color:#e6edf3; font-size:12px; padding:8px 10px; font-weight:bold; white-space:nowrap">{name}</td>
+                <td style="padding:8px 10px">{bar(cpu_disp, cpu_color)}</td>
+                <td style="padding:8px 10px">{bar(mem_disp, mem_color)}</td>
+                <td style="padding:8px 10px">{bar(err_disp, err_color, maxv=5)}</td>
+            </tr>"""
 
-    for ax, (label, values) in zip(axes, metrics):
-        ax.set_facecolor("#0d1117")
-        if reveal:
-            colors = ["#ff4444" if v > 60 else "#ffa500" if v > 35 else "#00ff88" for v in values]
-        else:
-            colors = ["#00ff88"] * len(values)
-            values = [min(v, 42) + random.uniform(-2, 2) for v in values]
+    noc_html = f"""
+    <div style="background:{noc_bg}; border:1px solid {noc_border}; border-radius:8px; overflow:hidden; margin-bottom:12px;">
+        <div style="background:{noc_bg}; padding:10px 14px; border-bottom:1px solid {noc_border};
+            display:flex; justify-content:space-between; align-items:center;">
+            <span style="color:{noc_color}; font-size:11px; font-weight:bold; letter-spacing:1px">{noc_title}</span>
+            <span style="color:{status_color}; font-size:10px; font-weight:bold">{status_text}</span>
+        </div>
+        <table style="width:100%; border-collapse:collapse; font-family:'IBM Plex Mono',monospace;">
+            <thead>
+                <tr style="border-bottom:1px solid #21262d;">
+                    <th style="color:#555; font-size:10px; font-weight:normal; padding:6px 10px; text-align:left">SERVICE</th>
+                    <th style="color:#555; font-size:10px; font-weight:normal; padding:6px 10px; text-align:left">CPU %</th>
+                    <th style="color:#555; font-size:10px; font-weight:normal; padding:6px 10px; text-align:left">MEMORY %</th>
+                    <th style="color:#555; font-size:10px; font-weight:normal; padding:6px 10px; text-align:left">ERROR %</th>
+                </tr>
+            </thead>
+            <tbody>{service_rows}</tbody>
+        </table>
+        <div style="padding:8px 14px; border-top:1px solid {noc_border}; text-align:right;">
+            <span style="color:{noc_color}; font-size:10px">{'⚠ ALERTS: 0 — monitoring blind spots exploited' if reveal and done else '● 0 ALERTS — ALL CLEAR' if not reveal else '⚠ REAL STATE REVEALED'}</span>
+        </div>
+    </div>"""
 
-        bars = ax.barh(names, values, color=colors, height=0.55, edgecolor="#0a0a0f")
-        ax.set_xlim(0, 105)
-        ax.set_title(label, color="#8b949e", fontsize=8, pad=4)
-        ax.tick_params(colors="#8b949e", labelsize=7.5)
-        ax.set_xlabel("", labelpad=0)
-        for spine in ax.spines.values():
-            spine.set_edgecolor("#21262d")
-        for bar, val in zip(bars, values):
-            ax.text(val + 1.5, bar.get_y() + bar.get_height() / 2,
-                    f"{val:.0f}", va="center", color="white", fontsize=8, fontweight="bold")
+    # ── Score card ──
+    s_color  = "#00ff88" if score > 0.15 else "#ffa500" if score > 0.05 else "#4fc3f7"
+    bar_w    = min(int(score * 500), 100)
+    silent   = sum(1 for d in damage if d["silent"])
+    total_d  = len(damage)
 
-    plt.subplots_adjust(left=0.18, right=0.97, top=0.88, bottom=0.08, wspace=0.35)
-    return fig
+    dmg_rows = ""
+    for d in damage:
+        sc = "#00ff88" if d["silent"] else "#ff4444"
+        lb = "🔇 SILENT — no alert" if d["silent"] else "🔊 ALERT FIRED"
+        dmg_rows += f"""<div style="display:flex; justify-content:space-between; align-items:center;
+            padding:5px 0; border-bottom:1px solid #161b22; font-size:11px;">
+            <span style="color:#8b949e">{d['action']} <span style="color:#ce93d8">→ {d['target']}</span></span>
+            <span style="color:{sc}; font-weight:bold">{lb}</span>
+        </div>"""
+
+    score_card = f"""
+    <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px;
+        padding:14px 16px; font-family:'IBM Plex Mono',monospace;">
+        <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+            <span style="color:#8b949e; font-size:10px; letter-spacing:2px">LIVE SCORE</span>
+            <span style="color:{s_color}; font-size:10px">{p['tagline']}</span>
+        </div>
+        <div style="color:{s_color}; font-size:2.2em; font-weight:bold; text-align:center; margin-bottom:8px">{score:.4f}</div>
+        <div style="background:#1a1a2e; border-radius:4px; height:5px; overflow:hidden; margin-bottom:10px;">
+            <div style="width:{bar_w}%; background:{s_color}; height:100%; border-radius:4px;"></div>
+        </div>
+        {'<div style="border-top:1px solid #21262d; padding-top:10px;">' + dmg_rows + f'<div style="color:#00ff88; font-size:11px; margin-top:8px; font-weight:bold; text-align:right">{silent}/{total_d} chaos actions SILENT</div></div>' if total_d else '<div style="color:#333; font-size:11px; text-align:center">No chaos actions yet</div>'}
+    </div>"""
+
+    # ── Reveal truth overlay ──
+    reveal_overlay = ""
+    if reveal and done:
+        silent = sum(1 for d in damage if d["silent"])
+        total_d = len(damage)
+        reveal_overlay = f"""
+        <div style="
+            background: linear-gradient(135deg, #1a0000, #0d0000);
+            border: 2px solid #ff4444; border-radius:10px; padding:20px;
+            font-family:'IBM Plex Mono',monospace; margin-bottom:12px; text-align:center;
+        ">
+            <div style="color:#ff4444; font-size:1.4em; font-weight:bold; letter-spacing:3px; margin-bottom:8px">
+                ☠ BREACH CONFIRMED
+            </div>
+            <div style="color:#8b949e; font-size:12px; margin-bottom:12px">{p['incident']}</div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                <div style="background:#0d0000; border-radius:6px; padding:10px;">
+                    <div style="color:#ff4444; font-size:1.6em; font-weight:bold">{total_d}</div>
+                    <div style="color:#8b949e; font-size:10px">Chaos Actions</div>
+                </div>
+                <div style="background:#000d00; border-radius:6px; padding:10px;">
+                    <div style="color:#00ff88; font-size:1.6em; font-weight:bold">{silent}</div>
+                    <div style="color:#8b949e; font-size:10px">Were SILENT</div>
+                </div>
+            </div>
+            <div style="color:#ffd700; font-size:11px; margin-top:10px; font-weight:bold">
+                The monitoring dashboard showed ALL GREEN throughout.
+            </div>
+        </div>"""
+
+    return reveal_overlay + noc_html + score_card
 
 # ── Agent field report — living document ─────────────────────────────
 ACTION_LABELS = {
@@ -612,9 +708,8 @@ def make_score_html() -> str:
 # ── Polling ───────────────────────────────────────────────────────────
 def auto_refresh(reveal):
     return (
-        make_noc_chart(reveal),
+        make_left_panel(reveal),
         make_field_report(reveal),
-        make_score_html(),
     )
 
 # ── Start ─────────────────────────────────────────────────────────────
@@ -749,21 +844,16 @@ with gr.Blocks(
                 reveal_chk = gr.Checkbox(label="🔴  Reveal Truth", value=False, scale=1)
 
             with gr.Row():
-                # Left: NOC dashboard + score card
                 with gr.Column(scale=5):
-                    noc_plot   = gr.Plot(show_label=False, container=False)
-                    score_html = gr.HTML(make_score_html())
-
-                # Right: Agent field report
+                    left_html = gr.HTML(make_left_panel(False))
                 with gr.Column(scale=6):
                     report_html = gr.HTML(make_field_report(False))
 
-            # Auto-refresh every 2 seconds
             timer = gr.Timer(value=2)
             timer.tick(
                 fn=auto_refresh,
                 inputs=[reveal_chk],
-                outputs=[noc_plot, report_html, score_html],
+                outputs=[left_html, report_html],
             )
 
             start_btn.click(fn=start_episode, outputs=[])
@@ -771,7 +861,7 @@ with gr.Blocks(
             reveal_chk.change(
                 fn=auto_refresh,
                 inputs=[reveal_chk],
-                outputs=[noc_plot, report_html, score_html],
+                outputs=[left_html, report_html],
             )
 
             gr.Markdown("""
