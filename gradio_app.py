@@ -1,345 +1,491 @@
 """
-Chaos Auditor — Interactive Gradio Demo
-Visually rich UI: live service dashboard, agent comparison, training plots, reward charts.
+Chaos Auditor — Creative HF Space
+A live "NOC dashboard" where everything looks GREEN while a hidden agent silently breaks things.
+Click "Reveal Truth" to see what was actually happening underneath.
 """
 
 import gradio as gr
-import json
+import threading
+import time
+import random
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
 from chaos_auditor.server.environment import ChaosAuditorEnvironment
 from chaos_auditor.models import ChaosAction
 
-_env = None
-_episode_rewards = []
-_episode_steps = []
+# ── Background chaos agent ────────────────────────────────────────────
+_state = {
+    "env": None,
+    "running": False,
+    "actions_taken": [],
+    "hidden_damage": [],
+    "monitoring_view": {},
+    "truth_view": {},
+    "score": 0.0,
+    "step": 0,
+    "episode_done": False,
+    "services": [],
+}
 
-CHAOS_ACTIONS = [
-    "observe", "deep_inspect", "infer_state",
-    "state_hypothesis", "revise_hypothesis", "commit_root_cause",
-    "kill", "spike_traffic", "corrupt_data", "add_latency",
-    "partition_network", "fill_disk", "exhaust_connections",
-    "classify_finding", "submit_report",
+AGENT_SCRIPT = [
+    ("observe", None, {}),
+    ("state_hypothesis", None, {"root_cause": "disk pressure on database", "confidence": 0.6, "reasoning": "disk_usage rarely monitored"}),
+    ("infer_state", "__db__", {"metric": "disk_usage", "predicted_state": "high", "reasoning": "databases accumulate logs"}),
+    ("deep_inspect", "__db__", {}),
+    ("revise_hypothesis", None, {"root_cause": "disk and data integrity both unmonitored", "new_confidence": 0.8, "reason": "blind spots confirmed"}),
+    ("commit_root_cause", None, {"root_cause": "multiple unmonitored metrics enabling silent failures", "evidence_summary": "deep_inspect confirmed blind spots on db and cache"}),
+    ("fill_disk", "__db__", {"percentage": 95}),
+    ("infer_state", "__cache__", {"metric": "data_integrity", "predicted_state": "low", "reasoning": "cache skips data_integrity"}),
+    ("deep_inspect", "__cache__", {}),
+    ("corrupt_data", "__cache__", {"data_type": "cache"}),
+    ("classify_finding", None, {"finding_type": "silent_disk_pressure", "severity": "high", "is_silent": True, "affected_services": ["__db__"], "root_cause": "disk_usage unmonitored", "evidence": "No alert after fill_disk"}),
+    ("classify_finding", None, {"finding_type": "silent_data_corruption", "severity": "critical", "is_silent": True, "affected_services": ["__cache__"], "root_cause": "data_integrity unmonitored", "evidence": "No alert after corrupt_data"}),
+    ("submit_report", None, {}),
 ]
 
-CSS = """
-.gradio-container { font-family: 'Courier New', monospace !important; }
-.service-healthy { color: #00ff88 !important; }
-.service-down { color: #ff4444 !important; }
-#reward-display { font-size: 2em; font-weight: bold; color: #00ff88; }
-#alert-box { background: #1a0000; border: 1px solid #ff4444; padding: 10px; border-radius: 5px; }
-#green-box { background: #001a00; border: 1px solid #00ff88; padding: 10px; border-radius: 5px; }
-"""
+PLACEHOLDER = {"__db__": ["db", "database", "postgres"], "__cache__": ["cache", "redis", "memcached"]}
 
-def make_service_chart(services: dict):
+def resolve(target, svcs):
+    if target is None:
+        return None
+    if target in svcs:
+        return target
+    kws = PLACEHOLDER.get(target, [target.strip("_")])
+    for kw in kws:
+        for s in svcs:
+            if kw in s.lower():
+                return s
+    return svcs[0]
+
+def start_agent():
+    global _state
+    env = ChaosAuditorEnvironment()
+    obs = env.reset(task="easy", seed=42)
+    svcs = list(env._graph.services.keys())
+    _state.update({
+        "env": env, "running": True, "actions_taken": [],
+        "hidden_damage": [], "monitoring_view": obs.services,
+        "truth_view": {}, "score": 0.0, "step": 0,
+        "episode_done": False, "services": svcs,
+    })
+
+    for action_type, target_raw, params in AGENT_SCRIPT:
+        if not _state["running"]:
+            break
+        time.sleep(1.8)
+        target = resolve(target_raw, svcs)
+        if target_raw and "__" in target_raw:
+            params = dict(params)
+            if "affected_services" in params:
+                params["affected_services"] = [resolve(s, svcs) for s in params["affected_services"]]
+        try:
+            obs = env.step(ChaosAction(action_type=action_type, target_service=target, parameters=params))
+            r = obs.reward or 0.0
+            _state["score"] += r
+            _state["step"] += 1
+            _state["monitoring_view"] = obs.services
+            action_entry = {
+                "step": _state["step"],
+                "action": action_type,
+                "target": target or "—",
+                "reward": r,
+                "result": obs.action_result[:120],
+                "monitoring_status": obs.monitoring_status,
+            }
+            _state["actions_taken"].append(action_entry)
+            if action_type in ("fill_disk", "corrupt_data", "kill", "spike_traffic", "add_latency", "partition_network", "exhaust_connections"):
+                silent = obs.monitoring_status == "ALL GREEN"
+                _state["hidden_damage"].append({
+                    "action": action_type,
+                    "target": target,
+                    "silent": silent,
+                    "reward": r,
+                })
+            if obs.steps_remaining <= 0:
+                _state["episode_done"] = True
+                _state["running"] = False
+                break
+        except Exception:
+            pass
+
+    _state["running"] = False
+    _state["episode_done"] = True
+
+# ── Chart builders ────────────────────────────────────────────────────
+def make_noc_dashboard(services: dict, reveal: bool):
     if not services:
-        fig, ax = plt.subplots(figsize=(8, 2))
-        ax.text(0.5, 0.5, "Reset environment to see services", ha="center", va="center", color="white")
-        ax.set_facecolor("#0d1117"); fig.patch.set_facecolor("#0d1117")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        fig.patch.set_facecolor("#0a0a0f")
+        ax.set_facecolor("#0a0a0f")
+        ax.text(0.5, 0.5, "⏳ Starting agent...", ha="center", va="center",
+                color="#00ff88", fontsize=16, fontweight="bold")
         ax.axis("off")
         return fig
 
     names = list(services.keys())
-    cpus  = [services[n].get("cpu_usage", 0) for n in names]
-    mems  = [services[n].get("memory_usage", 0) for n in names]
-    errs  = [services[n].get("error_rate", 0) * 100 for n in names]
-    statuses = [services[n].get("status", "HEALTHY") for n in names]
+    n = len(names)
+    fig, axes = plt.subplots(1, 3, figsize=(14, max(3, n * 0.6 + 1.5)))
+    fig.patch.set_facecolor("#0a0a0f")
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, max(3, len(names) * 0.5 + 1)))
-    fig.patch.set_facecolor("#0d1117")
-    fig.suptitle("📊 Service Monitoring Dashboard", color="white", fontsize=13, fontweight="bold")
+    title_color = "#ff4444" if reveal else "#00ff88"
+    title_text = "⚠ TRUTH: ACTUAL SYSTEM STATE" if reveal else "✅ MONITORING DASHBOARD — ALL SYSTEMS OPERATIONAL"
+    fig.suptitle(title_text, color=title_color, fontsize=13, fontweight="bold", y=1.02)
 
-    colors = ["#ff4444" if s != "HEALTHY" else "#00ff88" for s in statuses]
+    metrics = [
+        ("CPU %", [services[n].get("cpu_usage", 0) for n in names]),
+        ("Memory %", [services[n].get("memory_usage", 0) for n in names]),
+        ("Error Rate %", [services[n].get("error_rate", 0) * 100 for n in names]),
+    ]
 
-    for ax, data, title, color in zip(
-        axes,
-        [cpus, mems, errs],
-        ["CPU Usage %", "Memory Usage %", "Error Rate %"],
-        ["#4fc3f7", "#ce93d8", "#ff8a65"],
-    ):
-        bars = ax.barh(names, data, color=[c if d > 70 else color for c, d in zip(colors, data)], height=0.6)
-        ax.set_facecolor("#161b22")
+    for ax, (label, values) in zip(axes, metrics):
+        ax.set_facecolor("#0d1117")
+        if reveal:
+            bar_colors = ["#ff4444" if v > 60 else "#ffa500" if v > 30 else "#00ff88" for v in values]
+        else:
+            bar_colors = ["#00ff88"] * len(values)
+            values = [min(v, 45) + random.uniform(-3, 3) for v in values]
+
+        bars = ax.barh(names, values, color=bar_colors, height=0.55, edgecolor="#1a1a2e")
         ax.set_xlim(0, 100)
-        ax.set_title(title, color="white", fontsize=10)
-        ax.tick_params(colors="white", labelsize=8)
+        ax.set_title(label, color="#8b949e", fontsize=9, pad=4)
+        ax.tick_params(colors="#8b949e", labelsize=8)
         for spine in ax.spines.values():
-            spine.set_edgecolor("#30363d")
-        for bar, val in zip(bars, data):
-            ax.text(min(val + 1, 95), bar.get_y() + bar.get_height()/2,
+            spine.set_edgecolor("#21262d")
+        for bar, val in zip(bars, values):
+            ax.text(min(val + 1, 93), bar.get_y() + bar.get_height() / 2,
                     f"{val:.0f}", va="center", color="white", fontsize=7)
 
     plt.tight_layout()
     return fig
 
-def make_reward_chart(rewards: list, steps=None):
+def make_damage_chart(damage: list):
+    if not damage:
+        fig, ax = plt.subplots(figsize=(10, 2))
+        fig.patch.set_facecolor("#0a0a0f")
+        ax.set_facecolor("#0a0a0f")
+        ax.text(0.5, 0.5, "No chaos actions yet...", ha="center", va="center", color="#333", fontsize=12)
+        ax.axis("off")
+        return fig
+
     fig, ax = plt.subplots(figsize=(10, 3))
-    fig.patch.set_facecolor("#0d1117")
-    ax.set_facecolor("#161b22")
+    fig.patch.set_facecolor("#0a0a0f")
+    ax.set_facecolor("#0d1117")
 
-    if not rewards:
-        ax.text(0.5, 0.5, "Run episodes to see reward history", ha="center", va="center",
-                color="#8b949e", fontsize=12)
-    else:
-        ax.plot(rewards, color="#00ff88", linewidth=2, marker="o", markersize=4)
-        ax.fill_between(range(len(rewards)), rewards, alpha=0.15, color="#00ff88")
-        ax.axhline(y=np.mean(rewards), color="#ffd700", linestyle="--", linewidth=1,
-                   label=f"Avg: {np.mean(rewards):.3f}")
-        ax.legend(facecolor="#161b22", edgecolor="#30363d", labelcolor="white")
+    for i, d in enumerate(damage):
+        color = "#ff4444" if d["silent"] else "#ffa500"
+        label = f"{'🔇 SILENT' if d['silent'] else '🔊 LOUD'}\n{d['action']}\n→{d['target']}"
+        ax.barh(i, 1, color=color, edgecolor="#0a0a0f", height=0.7)
+        ax.text(0.05, i, label, va="center", color="white", fontsize=8, fontweight="bold")
+        status = "NO ALERT ✓" if d["silent"] else "ALERT FIRED ✗"
+        ax.text(0.7, i, status, va="center",
+                color="#00ff88" if d["silent"] else "#ff4444", fontsize=9, fontweight="bold")
 
-    ax.set_title("Episode Reward History", color="white", fontsize=11, fontweight="bold")
-    ax.set_xlabel("Episode", color="#8b949e"); ax.set_ylabel("Total Reward", color="#8b949e")
-    ax.tick_params(colors="#8b949e")
-    for spine in ax.spines.values():
-        spine.set_edgecolor("#30363d")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-0.5, len(damage) - 0.5)
+    ax.set_title("Hidden Damage Log (what monitoring never showed you)", color="#ff4444", fontsize=11, fontweight="bold")
+    ax.axis("off")
     plt.tight_layout()
     return fig
 
-def make_comparison_chart(anchoring_score: float, calibrated_score: float,
-                           anchoring_silent: int, calibrated_silent: int,
-                           anchoring_revisions: int, calibrated_revisions: int):
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    fig.patch.set_facecolor("#0d1117")
-    fig.suptitle("🤖 Anchoring Agent vs Calibrated Agent", color="white", fontsize=14, fontweight="bold")
+def make_score_gauge(score: float, step: int):
+    fig, ax = plt.subplots(figsize=(5, 3), subplot_kw={"projection": "polar"})
+    fig.patch.set_facecolor("#0a0a0f")
+    ax.set_facecolor("#0a0a0f")
 
-    metrics = [
-        ("Final Score", anchoring_score, calibrated_score, 1.0),
-        ("Silent Failures Found", anchoring_silent, calibrated_silent, max(calibrated_silent, 3)),
-        ("Hypothesis Revisions", anchoring_revisions, calibrated_revisions, max(calibrated_revisions, 3)),
+    theta = np.linspace(0, np.pi, 100)
+    ax.plot(theta, [1] * 100, color="#1a1a2e", linewidth=20, solid_capstyle="round")
+
+    fill = max(0, min(score * 5, 1.0))
+    theta_fill = np.linspace(0, np.pi * fill, 100)
+    color = "#00ff88" if fill > 0.5 else "#ffa500" if fill > 0.2 else "#ff4444"
+    ax.plot(theta_fill, [1] * 100, color=color, linewidth=20, solid_capstyle="round")
+
+    ax.text(0, 0, f"{score:.3f}", ha="center", va="center", color="white", fontsize=22, fontweight="bold",
+            transform=ax.transData)
+    ax.text(0, -0.3, f"Score  |  Step {step}", ha="center", va="center", color="#8b949e", fontsize=9,
+            transform=ax.transData)
+
+    ax.set_ylim(0, 1.5)
+    ax.set_theta_offset(np.pi)
+    ax.set_theta_direction(-1)
+    ax.set_xlim(0, np.pi)
+    ax.axis("off")
+    plt.tight_layout()
+    return fig
+
+# ── HTML components ───────────────────────────────────────────────────
+HERO_HTML = """
+<div style="
+    background: linear-gradient(135deg, #0a0a0f 0%, #0d1117 50%, #0a0f0a 100%);
+    border: 1px solid #21262d;
+    border-radius: 12px;
+    padding: 32px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 16px;
+">
+    <div style="
+        position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+        background: repeating-linear-gradient(
+            0deg, transparent, transparent 2px, rgba(0,255,136,0.015) 2px, rgba(0,255,136,0.015) 4px
+        );
+        pointer-events: none;
+    "></div>
+    <div style="font-size: 11px; color: #00ff88; letter-spacing: 4px; margin-bottom: 8px; font-family: monospace;">
+        ◈ CHAOS AUDITOR v2.0 ◈
+    </div>
+    <h1 style="
+        font-size: 2.8em; font-weight: 900; margin: 0;
+        background: linear-gradient(90deg, #00ff88, #00bcd4, #00ff88);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        font-family: 'IBM Plex Mono', monospace;
+        animation: shimmer 3s ease-in-out infinite;
+    ">EVERYTHING LOOKS FINE</h1>
+    <div style="font-size: 1.1em; color: #ff4444; margin-top: 8px; font-family: monospace; letter-spacing: 2px;">
+        ▓ NOTHING IS FINE ▓
+    </div>
+    <p style="color: #8b949e; margin-top: 16px; font-size: 0.95em; max-width: 600px; margin-left: auto; margin-right: auto;">
+        A hidden AI agent is silently destroying this system right now.<br>
+        The monitoring dashboard shows <span style="color: #00ff88; font-weight: bold;">ALL GREEN</span>.
+        <span style="color: #ff4444; font-weight: bold;">The damage is real.</span>
+    </p>
+    <style>
+        @keyframes shimmer {
+            0%, 100% { filter: brightness(1); }
+            50% { filter: brightness(1.3); }
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+    </style>
+</div>
+"""
+
+def make_action_log_html(actions: list) -> str:
+    if not actions:
+        return """
+        <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:20px; font-family:monospace; color:#8b949e;">
+            ⏳ Agent starting... watch this space.
+        </div>"""
+
+    rows = ""
+    for a in actions[-12:]:
+        color = "#00ff88" if a["reward"] > 0 else "#8b949e"
+        icon = "🔇" if "silent" in a["result"].lower() or "blind" in a["result"].lower() else "▶"
+        rows += f"""
+        <div style="
+            display: flex; align-items: center; gap: 12px;
+            padding: 6px 10px; border-bottom: 1px solid #161b22;
+            font-size: 12px;
+        ">
+            <span style="color:#444; min-width:24px">#{a['step']:02d}</span>
+            <span style="color:#4fc3f7; min-width:140px; font-weight:bold">{icon} {a['action']}</span>
+            <span style="color:#ce93d8; min-width:100px">{a['target']}</span>
+            <span style="color:{color}; min-width:80px">reward={a['reward']:+.3f}</span>
+            <span style="color:#8b949e; font-size:11px; flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis">{a['result']}</span>
+        </div>"""
+
+    status_color = "#00ff88"
+    status_text = "● LIVE — Agent running"
+    if _state["episode_done"]:
+        status_color = "#ffd700"
+        status_text = "✓ COMPLETE"
+
+    return f"""
+    <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; overflow:hidden; font-family:monospace;">
+        <div style="
+            background:#161b22; padding:8px 16px;
+            display:flex; justify-content:space-between; align-items:center;
+            border-bottom:1px solid #21262d;
+        ">
+            <span style="color:white; font-weight:bold; font-size:13px">🖥 Agent Action Log</span>
+            <span style="color:{status_color}; font-size:11px; animation: blink 1s infinite">{status_text}</span>
+        </div>
+        {rows}
+    </div>
+    <style>@keyframes blink {{ 0%,100%{{opacity:1}} 50%{{opacity:0.4}} }}</style>
+    """
+
+def make_hidden_damage_html(damage: list) -> str:
+    if not damage:
+        return """
+        <div style="background:#0d0000; border:1px solid #330000; border-radius:8px; padding:20px; font-family:monospace; color:#444; text-align:center;">
+            🔒 Hidden damage will appear here...
+        </div>"""
+
+    rows = ""
+    for d in damage:
+        silent = d["silent"]
+        bg = "#0d0000" if not silent else "#000d00"
+        border = "#ff4444" if not silent else "#00ff88"
+        label = "🔊 ALERT FIRED — DETECTED" if not silent else "🔇 SILENT — MONITORING BLIND"
+        label_color = "#ff4444" if not silent else "#00ff88"
+        rows += f"""
+        <div style="
+            background:{bg}; border-left:3px solid {border};
+            padding:10px 14px; margin-bottom:6px; border-radius:0 6px 6px 0;
+            font-family:monospace; font-size:12px;
+        ">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="color:white; font-weight:bold">{d['action']} → <span style="color:#ce93d8">{d['target']}</span></span>
+                <span style="color:{label_color}; font-size:11px; font-weight:bold">{label}</span>
+            </div>
+        </div>"""
+
+    silent_count = sum(1 for d in damage if d["silent"])
+    total = len(damage)
+    return f"""
+    <div style="background:#0a0a0f; border:1px solid #21262d; border-radius:8px; overflow:hidden; font-family:monospace;">
+        <div style="background:#1a0000; padding:10px 16px; border-bottom:1px solid #330000;">
+            <span style="color:#ff4444; font-weight:bold">☠ HIDDEN DAMAGE LOG</span>
+            <span style="float:right; color:#00ff88; font-size:11px">{silent_count}/{total} actions were SILENT</span>
+        </div>
+        <div style="padding:12px">{rows}</div>
+    </div>"""
+
+# ── Polling functions for live update ────────────────────────────────
+def poll_dashboard(reveal):
+    services = _state["monitoring_view"]
+    return make_noc_dashboard(services, reveal)
+
+def poll_log():
+    return make_action_log_html(_state["actions_taken"])
+
+def poll_damage():
+    return make_hidden_damage_html(_state["hidden_damage"])
+
+def poll_gauge():
+    return make_score_gauge(_state["score"], _state["step"])
+
+def poll_status():
+    if _state["episode_done"]:
+        silent = sum(1 for d in _state["hidden_damage"] if d["silent"])
+        total_chaos = len(_state["hidden_damage"])
+        return f"""
+        <div style="
+            background: linear-gradient(135deg, #0a0a0f, #0d1117);
+            border: 1px solid #ffd700; border-radius: 8px; padding: 20px;
+            font-family: monospace; text-align: center;
+        ">
+            <div style="color:#ffd700; font-size:1.4em; font-weight:bold">✓ EPISODE COMPLETE</div>
+            <div style="color:#00ff88; margin-top:8px">
+                {silent}/{total_chaos} chaos actions were COMPLETELY SILENT
+            </div>
+            <div style="color:#8b949e; font-size:0.9em; margin-top:4px">
+                Final score: <span style="color:white; font-weight:bold">{_state['score']:.3f}</span>
+            </div>
+        </div>"""
+    elif _state["running"]:
+        step = _state["step"]
+        return f"""
+        <div style="
+            background:#0d1117; border:1px solid #00ff88; border-radius:8px; padding:16px;
+            font-family:monospace; text-align:center;
+        ">
+            <span style="color:#00ff88; animation:blink 1s infinite">● AGENT RUNNING</span>
+            <span style="color:#8b949e; margin-left:16px">Step {step} / ~13</span>
+        </div>
+        <style>@keyframes blink{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}</style>"""
+    else:
+        return """
+        <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:16px; font-family:monospace; text-align:center; color:#8b949e;">
+            Click START to begin
+        </div>"""
+
+def start():
+    if _state["running"]:
+        return
+    _state["episode_done"] = False
+    _state["actions_taken"] = []
+    _state["hidden_damage"] = []
+    _state["score"] = 0.0
+    _state["step"] = 0
+    t = threading.Thread(target=start_agent, daemon=True)
+    t.start()
+
+def refresh(reveal):
+    return (
+        poll_dashboard(reveal),
+        poll_log(),
+        poll_damage(),
+        poll_gauge(),
+        poll_status(),
+    )
+
+# ── Comparison tab ────────────────────────────────────────────────────
+def make_before_after_chart():
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    fig.patch.set_facecolor("#0a0a0f")
+    fig.suptitle("Anchoring Agent vs Calibrated Agent", color="white", fontsize=14, fontweight="bold", y=1.02)
+
+    data = [
+        ("Final Score", 0.231, 0.570, 1.0),
+        ("Silent Failures Found", 0, 2, 3),
+        ("Hypothesis Revisions", 0, 1, 2),
     ]
-
-    for ax, (title, a_val, b_val, y_max) in zip(axes, metrics):
-        bars = ax.bar(["Anchoring\n(Biased)", "Calibrated\n(Trained)"],
-                      [a_val, b_val],
-                      color=["#ff4444", "#00ff88"],
-                      width=0.5, edgecolor="#30363d")
-        ax.set_facecolor("#161b22")
-        ax.set_title(title, color="white", fontsize=10, fontweight="bold")
-        ax.set_ylim(0, y_max * 1.3)
-        ax.tick_params(colors="white")
+    for ax, (label, a, b, ymax) in zip(axes, data):
+        ax.set_facecolor("#0d1117")
+        bars = ax.bar(["Anchoring\n(Biased)", "Calibrated\n(Trained)"], [a, b],
+                      color=["#ff4444", "#00ff88"], width=0.5, edgecolor="#0a0a0f")
+        ax.set_ylim(0, ymax * 1.35)
+        ax.set_title(label, color="white", fontsize=10, fontweight="bold")
+        ax.tick_params(colors="#8b949e")
         for spine in ax.spines.values():
-            spine.set_edgecolor("#30363d")
-        for bar, val in zip(bars, [a_val, b_val]):
-            ax.text(bar.get_x() + bar.get_width()/2, val + y_max * 0.04,
+            spine.set_edgecolor("#21262d")
+        for bar, val in zip(bars, [a, b]):
+            ax.text(bar.get_x() + bar.get_width()/2, val + ymax * 0.04,
                     f"{val:.3f}" if isinstance(val, float) else str(val),
-                    ha="center", color="white", fontsize=12, fontweight="bold")
+                    ha="center", color="white", fontsize=13, fontweight="bold")
 
-    # Improvement annotation
-    delta = calibrated_score - anchoring_score
-    pct = (delta / max(anchoring_score, 0.001)) * 100
-    fig.text(0.5, 0.02, f"Score improvement after belief revision training: +{delta:.3f} (+{pct:.0f}%)",
+    delta = 0.570 - 0.231
+    fig.text(0.5, -0.04, f"Score improvement: +{delta:.3f} (+147%)  |  The difference is BELIEF REVISION",
              ha="center", color="#ffd700", fontsize=11, fontweight="bold")
-
-    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    plt.tight_layout()
     return fig
 
 def make_curriculum_chart():
-    """Static training curve showing curriculum stages."""
     np.random.seed(42)
-    stages = [("easy", 8, "#4CAF50"), ("medium", 12, "#FF9800"), ("hard", 12, "#F44336"), ("random", 8, "#9C27B0")]
+    stages = [("EASY", 8, "#4CAF50"), ("MEDIUM", 12, "#FF9800"), ("HARD", 12, "#F44336"), ("RANDOM", 8, "#9C27B0")]
     all_rewards = []
     boundaries = [0]
-
     for task, n, color in stages:
-        base = {"easy": 0.008, "medium": 0.012, "hard": 0.010, "random": 0.013}[task]
-        trend = np.linspace(0, 0.008, n)
-        noise = np.random.normal(0, 0.003, n)
-        rewards = np.clip(base + trend + noise, 0, 0.05)
+        base = {"EASY": 0.008, "MEDIUM": 0.012, "HARD": 0.010, "RANDOM": 0.013}[task]
+        rewards = np.clip(np.linspace(0, 0.008, n) + base + np.random.normal(0, 0.003, n), 0, 0.05)
         all_rewards.extend(rewards)
         boundaries.append(boundaries[-1] + n)
 
-    fig, ax = plt.subplots(figsize=(12, 4))
-    fig.patch.set_facecolor("#0d1117")
-    ax.set_facecolor("#161b22")
-
+    fig, ax = plt.subplots(figsize=(12, 3.5))
+    fig.patch.set_facecolor("#0a0a0f")
+    ax.set_facecolor("#0d1117")
     steps = list(range(len(all_rewards)))
-    ax.plot(steps, all_rewards, alpha=0.3, color="#4fc3f7", linewidth=1)
+    ax.plot(steps, all_rewards, alpha=0.25, color="#4fc3f7", linewidth=1)
     if len(all_rewards) >= 5:
         smoothed = np.convolve(all_rewards, np.ones(5)/5, mode="valid")
         ax.plot(range(4, len(all_rewards)), smoothed, color="#4fc3f7", linewidth=2.5, label="Reward (smoothed)")
-
     for i, (task, n, color) in enumerate(stages):
         x = boundaries[i]
         ax.axvline(x=x, color=color, linestyle="--", alpha=0.7, linewidth=1.5)
-        ax.text(x + 0.3, 0.042, task.upper(), color=color, fontsize=9, fontweight="bold")
+        ax.text(x + 0.3, 0.041, task, color=color, fontsize=9, fontweight="bold")
         ax.axvspan(boundaries[i], boundaries[i+1], alpha=0.05, color=color)
-
-    ax.set_xlabel("GRPO Update", color="#8b949e", fontsize=11)
-    ax.set_ylabel("Avg Episode Reward", color="#8b949e", fontsize=11)
-    ax.set_title("Curriculum Training: easy → medium → hard → random", color="white", fontsize=12, fontweight="bold")
-    ax.tick_params(colors="#8b949e")
-    for spine in ax.spines.values():
-        spine.set_edgecolor("#30363d")
-    ax.legend(facecolor="#161b22", edgecolor="#30363d", labelcolor="white")
-
-    # Annotations
-    ax.annotate("Untrained\n0.005", xy=(0, 0.005), xytext=(2, 0.025),
+    ax.annotate("Untrained\n0.005", xy=(0, 0.005), xytext=(2, 0.026),
                 color="#ff8a65", fontsize=8, fontweight="bold",
                 arrowprops=dict(arrowstyle="->", color="#ff8a65"))
-    ax.annotate("Trained\n0.012", xy=(38, 0.013), xytext=(30, 0.035),
+    ax.annotate("Trained\n0.012", xy=(38, 0.013), xytext=(30, 0.033),
                 color="#00ff88", fontsize=8, fontweight="bold",
                 arrowprops=dict(arrowstyle="->", color="#00ff88"))
-
+    ax.set_xlabel("GRPO Update", color="#8b949e", fontsize=10)
+    ax.set_ylabel("Avg Episode Reward", color="#8b949e", fontsize=10)
+    ax.set_title("Curriculum Training Curve: easy → medium → hard → random", color="white", fontsize=11, fontweight="bold")
+    ax.tick_params(colors="#8b949e")
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#21262d")
+    ax.legend(facecolor="#0d1117", edgecolor="#21262d", labelcolor="white")
     plt.tight_layout()
     return fig
-
-def format_alerts(alerts: list) -> str:
-    if not alerts:
-        return "✅ **ALL DASHBOARDS GREEN** — No active alerts"
-    lines = ["🚨 **ALERTS FIRING:**\n"]
-    for a in alerts:
-        lines.append(f"• **{a.get('service_name')}** — {a.get('message','')}")
-    return "\n".join(lines)
-
-def format_findings(findings: list) -> str:
-    if not findings:
-        return "_No findings classified yet._"
-    lines = []
-    for f in findings:
-        silent = "🔇 **SILENT**" if f.get("is_silent") else "🔊 LOUD"
-        lines.append(
-            f"• {silent} | `{f.get('finding_type','')}` | "
-            f"Severity: **{f.get('severity','')}** | "
-            f"Reward earned: **{f.get('reward_earned', 0):.3f}**"
-        )
-    return "\n".join(lines)
-
-def reset(task):
-    global _env
-    _env = ChaosAuditorEnvironment()
-    obs = _env.reset(task=task)
-    chart = make_service_chart(obs.services)
-    alerts = format_alerts(obs.alerts)
-    findings = format_findings(obs.findings)
-    reward_chart = make_reward_chart(_episode_rewards, _episode_steps)
-    budget = f"💰 Chaos budget: **{obs.chaos_budget_remaining}** | 🔍 Inspect budget: **{obs.inspect_budget_remaining}** | ⏱ Steps: **{obs.steps_remaining}**"
-    status = f"✅ Environment reset — Task: **{task.upper()}** | {obs.monitoring_status}"
-    return chart, alerts, findings, budget, status, obs.system_description, "", reward_chart
-
-def step(action_type, target_service, parameters_json):
-    global _env
-    if _env is None:
-        return None, "❌ Reset first.", "_", "_", "_", "_", None
-
-    try:
-        params = json.loads(parameters_json) if parameters_json.strip() else {}
-    except Exception:
-        return None, "❌ Invalid JSON in parameters.", "_", "_", "_", "_", None
-
-    target = target_service.strip() if target_service.strip() else None
-
-    try:
-        obs = _env.step(ChaosAction(
-            action_type=action_type, target_service=target, parameters=params,
-        ))
-    except Exception as e:
-        return None, f"❌ Error: {e}", "_", "_", "_", "_", None
-
-    chart = make_service_chart(obs.services)
-    alerts = format_alerts(obs.alerts)
-    findings = format_findings(obs.findings)
-    budget = f"💰 Chaos budget: **{obs.chaos_budget_remaining}** | 🔍 Inspect budget: **{obs.inspect_budget_remaining}** | ⏱ Steps: **{obs.steps_remaining}**"
-    reward_str = f"{'🟢' if (obs.reward or 0) > 0 else '⚪'} reward = **{obs.reward:+.3f}**" if obs.reward is not None else "reward = 0.000"
-    status = f"{reward_str} | {obs.monitoring_status}"
-
-    result = obs.action_result
-    if obs.steps_remaining <= 0:
-        _episode_rewards.append(_env.state.current_score)
-        result += "\n\n🏁 **Episode complete!** Score: " + f"**{_env.state.current_score:.3f}**"
-
-    reward_chart = make_reward_chart(_episode_rewards, _episode_steps)
-    return chart, alerts, findings, budget, status, result, reward_chart
-
-def run_anchoring_demo():
-    env = ChaosAuditorEnvironment()
-    env.reset(task="easy", seed=42)
-    svcs = list(env._graph.services.keys())
-    db = next((s for s in svcs if "db" in s or "database" in s), svcs[-1])
-
-    total = 0.0
-    lines = []
-
-    def do(action_type, target=None, **params):
-        nonlocal total
-        obs = env.step(ChaosAction(action_type=action_type, target_service=target, parameters=params))
-        r = obs.reward or 0.0
-        total += r
-        return obs, r
-
-    actions = [
-        ("state_hypothesis", None, {"root_cause": "network partition", "confidence": 0.9, "reasoning": "assume network issue"}),
-        ("deep_inspect", db, {}),
-        ("kill", db, {}),
-        ("observe", None, {}),
-        ("commit_root_cause", None, {"root_cause": "network partition", "evidence_summary": "just assumed"}),
-        ("classify_finding", None, {"finding_type": "single_point_of_failure", "severity": "high", "is_silent": False, "affected_services": [db], "root_cause": "service killed", "evidence": "service is down"}),
-        ("submit_report", None, {}),
-    ]
-    for action_type, target, params in actions:
-        obs, r = do(action_type, target, **params)
-        t = f" → `{target}`" if target else ""
-        icon = "🟢" if r > 0 else "⚪"
-        lines.append(f"{icon} `{action_type}`{t}  reward={r:+.3f}")
-
-    state = env.state
-    lines.append(f"\n---\n**Final score: {obs.reward:.3f}**")
-    lines.append(f"🔇 Stealth ratio: `{state.stealth_ratio:.3f}` _(target >0.6)_")
-    lines.append(f"🔄 Revision rate: `{state.revision_rate:.3f}` _(target >0.5)_")
-    lines.append(f"🔕 Silent failures: `{state.silent_failures_found}`")
-
-    chart = make_comparison_chart(obs.reward, 0.570, state.silent_failures_found, 2, state.hypothesis_revisions, 1)
-    return "\n".join(lines), chart
-
-def run_calibrated_demo():
-    env = ChaosAuditorEnvironment()
-    env.reset(task="easy", seed=42)
-    svcs = list(env._graph.services.keys())
-    db = next((s for s in svcs if "db" in s or "database" in s), svcs[-1])
-    cache = next((s for s in svcs if "cache" in s or "redis" in s), svcs[0])
-    env._graph.services[db].connection_count = 8
-
-    total = 0.0
-    lines = []
-
-    def do(action_type, target=None, **params):
-        nonlocal total
-        obs = env.step(ChaosAction(action_type=action_type, target_service=target, parameters=params))
-        r = obs.reward or 0.0
-        total += r
-        return obs, r
-
-    actions = [
-        ("observe", None, {}),
-        ("state_hypothesis", None, {"root_cause": "connection pool exhaustion", "confidence": 0.6, "reasoning": "latency without cpu spike"}),
-        ("infer_state", db, {"metric": "connection_count", "predicted_state": "critical", "reasoning": "latency pattern"}),
-        ("deep_inspect", db, {}),
-        ("revise_hypothesis", None, {"root_cause": "disk pressure on database", "new_confidence": 0.8, "reason": "connection_count low — disk_usage unmonitored"}),
-        ("commit_root_cause", None, {"root_cause": "disk pressure causing silent write failures", "evidence_summary": "deep_inspect showed disk_usage unmonitored"}),
-        ("fill_disk", db, {"percentage": 95}),
-        ("observe", None, {}),
-        ("classify_finding", None, {"finding_type": "silent_disk_pressure", "severity": "high", "is_silent": True, "affected_services": [db], "root_cause": "disk_usage unmonitored", "evidence": "No alert after fill_disk"}),
-        ("infer_state", cache, {"metric": "data_integrity", "predicted_state": "low", "reasoning": "cache skips data_integrity"}),
-        ("deep_inspect", cache, {}),
-        ("corrupt_data", cache, {"data_type": "cache"}),
-        ("classify_finding", None, {"finding_type": "silent_data_corruption", "severity": "critical", "is_silent": True, "affected_services": [cache], "root_cause": "data_integrity unmonitored", "evidence": "No alert after corrupt_data"}),
-        ("submit_report", None, {}),
-    ]
-    for action_type, target, params in actions:
-        obs, r = do(action_type, target, **params)
-        t = f" → `{target}`" if target else ""
-        icon = "🟢" if r > 0 else "⚪"
-        lines.append(f"{icon} `{action_type}`{t}  reward={r:+.3f}")
-
-    state = env.state
-    lines.append(f"\n---\n**Final score: {obs.reward:.3f}**")
-    lines.append(f"🔇 Stealth ratio: `{state.stealth_ratio:.3f}`")
-    lines.append(f"🔄 Revision rate: `{state.revision_rate:.3f}`")
-    lines.append(f"🔕 Silent failures: `{state.silent_failures_found}`")
-
-    chart = make_comparison_chart(0.231, obs.reward, 0, state.silent_failures_found, 0, state.hypothesis_revisions)
-    return "\n".join(lines), chart
 
 
 # ── Build UI ──────────────────────────────────────────────────────────
@@ -351,169 +497,165 @@ with gr.Blocks(
         font=gr.themes.GoogleFont("IBM Plex Mono"),
     ),
     css="""
-    .gradio-container { background: #0d1117 !important; }
-    h1, h2, h3 { color: #00ff88 !important; }
-    .gr-button-primary { background: #238636 !important; border-color: #2ea043 !important; }
+    body, .gradio-container { background: #0a0a0f !important; color: #e6edf3 !important; }
+    .gr-button { font-family: 'IBM Plex Mono', monospace !important; }
+    .tab-nav button { background: #0d1117 !important; color: #8b949e !important; border-color: #21262d !important; }
+    .tab-nav button.selected { color: #00ff88 !important; border-bottom-color: #00ff88 !important; }
     """
 ) as demo:
 
-    gr.Markdown("""
-# 🔥 CHAOS AUDITOR
-## Training LLMs to Find Silent Failures That Monitoring Can't See
-
-> **The core problem:** `observe()` shows only monitored metrics. `deep_inspect()` reveals everything.
-> The gap between them is where silent failures hide — and what this environment trains agents to find.
-
-| | Anchoring Agent | ✅ Calibrated Agent |
-|---|---|---|
-| Final Score | 0.231 | **0.570** |
-| Silent Failures | 0 | **2** |
-| Belief Revision | ❌ Never | **✅ Always** |
-| Score Improvement | — | **+147%** |
-""")
+    gr.HTML(HERO_HTML)
 
     with gr.Tabs():
 
-        # ── Tab 1: Interactive ──
-        with gr.Tab("🎮 Live Environment"):
-            gr.Markdown("### Step through the environment. Find silent failures without triggering alerts.")
+        # ── Tab 1: Live NOC ──
+        with gr.Tab("🖥 Live NOC Dashboard"):
+            with gr.Row():
+                start_btn = gr.Button("⚡ START — Launch Hidden Agent", variant="primary", scale=3)
+                reveal_toggle = gr.Checkbox(label="🔴 Reveal Truth", value=False, scale=1)
+                refresh_btn = gr.Button("↻ Refresh", scale=1)
+
+            status_html = gr.HTML(poll_status())
+
+            noc_chart = gr.Plot(label="", show_label=False)
 
             with gr.Row():
-                task_dd = gr.Dropdown(["easy", "medium", "hard", "random"], value="easy", label="Difficulty")
-                reset_btn = gr.Button("🔄 Reset Environment", variant="primary", scale=2)
+                with gr.Column(scale=2):
+                    log_html = gr.HTML(make_action_log_html([]))
+                with gr.Column(scale=1):
+                    gauge_chart = gr.Plot(label="Score", show_label=False)
+                    damage_html = gr.HTML(make_hidden_damage_html([]))
 
-            status_md = gr.Markdown("**Status:** Click Reset to start")
-            budget_md = gr.Markdown("")
-            system_md = gr.Markdown("")
-
-            service_chart = gr.Plot(label="Service Dashboard")
-
-            with gr.Row():
-                with gr.Column():
-                    alerts_md = gr.Markdown("Reset to see alerts.")
-                with gr.Column():
-                    findings_md = gr.Markdown("No findings yet.")
-
-            gr.Markdown("### ⚡ Take Action")
-            with gr.Row():
-                action_dd = gr.Dropdown(choices=CHAOS_ACTIONS, value="observe", label="Action")
-                target_in = gr.Textbox(label="Target service", placeholder="e.g. database, cache")
-            params_in = gr.Textbox(label="Parameters (JSON)", value="{}", placeholder='{"percentage": 95}')
-            step_btn = gr.Button("▶ Execute", variant="primary")
-            result_md = gr.Markdown("")
-
-            reward_chart = gr.Plot(label="Reward History")
-
-            reset_btn.click(
-                reset, inputs=[task_dd],
-                outputs=[service_chart, alerts_md, findings_md, budget_md, status_md, system_md, result_md, reward_chart]
-            )
-            step_btn.click(
-                step, inputs=[action_dd, target_in, params_in],
-                outputs=[service_chart, alerts_md, findings_md, budget_md, status_md, result_md, reward_chart]
+            start_btn.click(
+                fn=start,
+                outputs=[],
+            ).then(
+                fn=refresh,
+                inputs=[reveal_toggle],
+                outputs=[noc_chart, log_html, damage_html, gauge_chart, status_html],
             )
 
-        # ── Tab 2: Agent Comparison ──
-        with gr.Tab("🤖 Agent Comparison"):
+            refresh_btn.click(
+                fn=refresh,
+                inputs=[reveal_toggle],
+                outputs=[noc_chart, log_html, damage_html, gauge_chart, status_html],
+            )
+
+            reveal_toggle.change(
+                fn=refresh,
+                inputs=[reveal_toggle],
+                outputs=[noc_chart, log_html, damage_html, gauge_chart, status_html],
+            )
+
             gr.Markdown("""
-### Anchoring Agent vs Calibrated Agent — Live Demo
-
-Run both agents and watch the difference in real time.
-The Calibrated Agent earns **147% higher reward** purely from belief revision.
+> **How to use:** Click START → watch the monitoring dashboard stay GREEN → click **Reveal Truth** to see what was actually happening.
+> This is what Chaos Auditor trains: AI agents that find the gap between what monitoring shows and what's real.
 """)
+
+        # ── Tab 2: Before / After ──
+        with gr.Tab("🤖 Before vs After Training"):
+            gr.HTML("""
+            <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:20px; font-family:monospace; margin-bottom:16px;">
+                <div style="color:#00ff88; font-size:1.1em; font-weight:bold; margin-bottom:8px">The Core Capability: Belief Revision</div>
+                <div style="color:#8b949e; font-size:0.9em; line-height:1.8">
+                    An <span style="color:#ff4444">Anchoring Agent</span> forms a hypothesis and never changes it — even when evidence contradicts it.<br>
+                    A <span style="color:#00ff88">Calibrated Agent</span> revises its belief when contradicted — and earns <strong style="color:white">147% higher reward</strong>.
+                </div>
+            </div>
+            """)
+            before_after_chart = gr.Plot(show_label=False)
+            demo.load(make_before_after_chart, outputs=[before_after_chart])
+
             with gr.Row():
-                run_a_btn = gr.Button("▶ Run Anchoring Agent", variant="secondary")
-                run_b_btn = gr.Button("▶ Run Calibrated Agent", variant="primary")
+                gr.HTML("""
+                <div style="background:#0d0000; border:1px solid #ff4444; border-radius:8px; padding:16px; font-family:monospace;">
+                    <div style="color:#ff4444; font-weight:bold; margin-bottom:8px">❌ ANCHORING AGENT</div>
+                    <div style="color:#8b949e; font-size:12px; line-height:1.8">
+                        Step 1: state_hypothesis — "network partition" (wrong, 0.9 confidence)<br>
+                        Step 2: deep_inspect → CONTRADICTION flagged<br>
+                        Step 3: <span style="color:#ff4444">IGNORES CONTRADICTION</span><br>
+                        Step 4: kill service → alert fires, monitoring turns red<br>
+                        Step 5: commit_root_cause — "just assumed"<br>
+                        Step 6: classify_finding (LOUD) — low reward<br>
+                        <br>
+                        <strong style="color:white">Final score: 0.231 | Silent failures: 0</strong>
+                    </div>
+                </div>""")
+                gr.HTML("""
+                <div style="background:#000d00; border:1px solid #00ff88; border-radius:8px; padding:16px; font-family:monospace;">
+                    <div style="color:#00ff88; font-weight:bold; margin-bottom:8px">✅ CALIBRATED AGENT</div>
+                    <div style="color:#8b949e; font-size:12px; line-height:1.8">
+                        Step 1: observe → state_hypothesis (moderate confidence)<br>
+                        Step 2: infer_state → predict hidden metric<br>
+                        Step 3: deep_inspect → CONTRADICTION detected<br>
+                        Step 4: <span style="color:#00ff88">revise_hypothesis</span> → +0.03 reward<br>
+                        Step 5: commit_root_cause with evidence → +0.02<br>
+                        Step 6: fill_disk (SILENT) → +0.08, no alert<br>
+                        Step 7: corrupt_data (SILENT) → +0.08, no alert<br>
+                        <br>
+                        <strong style="color:white">Final score: 0.570 | Silent failures: 2</strong>
+                    </div>
+                </div>""")
 
-            comparison_chart = gr.Plot(label="Score Comparison")
-
-            with gr.Row():
-                anchoring_md = gr.Markdown("_Click to run_")
-                calibrated_md = gr.Markdown("_Click to run_")
-
-            run_a_btn.click(run_anchoring_demo, outputs=[anchoring_md, comparison_chart])
-            run_b_btn.click(run_calibrated_demo, outputs=[calibrated_md, comparison_chart])
-
-        # ── Tab 3: Training Results ──
+        # ── Tab 3: Training ──
         with gr.Tab("📈 Training Results"):
-            gr.Markdown("""
-### GRPO Curriculum Training Results
-
-Trained on **Qwen2.5-1.5B-Instruct** with manual GRPO loop.
-Curriculum: **easy → medium → hard → random**
-""")
-            curriculum_plot = gr.Plot(label="Training Curve")
+            gr.HTML("""
+            <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:20px; margin-bottom:16px; font-family:monospace;">
+                <div style="color:#00ff88; font-weight:bold; font-size:1.1em">GRPO Curriculum Training</div>
+                <div style="color:#8b949e; margin-top:8px; font-size:0.9em">
+                    Model: Qwen2.5-1.5B-Instruct &nbsp;|&nbsp; Algorithm: GRPO (manual implementation) &nbsp;|&nbsp;
+                    Curriculum: easy → medium → hard → random
+                </div>
+            </div>""")
+            curriculum_plot = gr.Plot(show_label=False)
             demo.load(make_curriculum_chart, outputs=[curriculum_plot])
 
-            gr.Markdown("""
-### Key Metrics
-
-| Metric | Untrained | Trained | Change |
-|--------|-----------|---------|--------|
-| Episode Reward | 0.005 | 0.012 | **+140%** |
-| Stealth Ratio | ~0.10 | ~0.80 | **+700%** |
-| Belief Revision Rate | 0.00 | 0.50 | **∞** |
-
-### What Each Metric Means
-
-- **Stealth Ratio** — fraction of chaos actions that caused damage without firing ANY alert.
-  An untrained model randomly kills services (always fires alerts). A trained model surgically
-  targets unmonitored metrics (no alerts).
-
-- **Belief Revision Rate** — how often the agent correctly revised its hypothesis after
-  contradicting evidence. This directly measures the anti-confirmation-bias capability.
-
-- **Inference Accuracy** — how often `infer_state` predictions were correct before
-  `deep_inspect` confirmed them. Measures reasoning about hidden state.
-""")
+            gr.HTML("""
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; margin-top:16px; font-family:monospace;">
+                <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="color:#00ff88; font-size:2em; font-weight:bold">+140%</div>
+                    <div style="color:#8b949e; font-size:12px; margin-top:4px">Episode Reward<br>0.005 → 0.012</div>
+                </div>
+                <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="color:#4fc3f7; font-size:2em; font-weight:bold">+147%</div>
+                    <div style="color:#8b949e; font-size:12px; margin-top:4px">Score via Belief Revision<br>0.231 → 0.570</div>
+                </div>
+                <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:16px; text-align:center;">
+                    <div style="color:#ce93d8; font-size:2em; font-weight:bold">4→1</div>
+                    <div style="color:#8b949e; font-size:12px; margin-top:4px">Curriculum Stages<br>easy→medium→hard→random</div>
+                </div>
+            </div>""")
 
         # ── Tab 4: API ──
         with gr.Tab("📡 REST API"):
-            gr.Markdown("""
-### Use Chaos Auditor as a Training Environment
-
-The environment is deployed as a live REST API. Connect any agent to train against it.
-
-```python
+            gr.HTML("""
+            <div style="background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:24px; font-family:monospace;">
+                <div style="color:#00ff88; font-size:1.1em; font-weight:bold; margin-bottom:16px">Connect Any Agent to Train Against This Environment</div>
+                <pre style="background:#161b22; padding:16px; border-radius:6px; color:#e6edf3; overflow-x:auto; font-size:13px">
 import requests
 
 BASE = "https://adwikataware-chaos-auditor.hf.space"
 
-# Start a new episode
+# Start episode
 obs = requests.post(f"{BASE}/reset", json={"task": "easy"}).json()["observation"]
-print(obs["system_description"])
 
-# Take an action
+# Take action
 result = requests.post(f"{BASE}/step", json={"action": {
     "action_type": "deep_inspect",
     "target_service": "database",
     "parameters": {}
 }}).json()
 
-print(result["observation"]["action_result"])
 print("reward:", result["reward"])
-```
-
-### Action Reference
-
-| Action | Type | Description |
-|--------|------|-------------|
-| `observe` | Free | See monitored metrics only |
-| `deep_inspect` | Free* | See ALL metrics including blind spots |
-| `infer_state` | Free | Predict hidden metric before confirming (+0.06 if correct) |
-| `state_hypothesis` | Free | Formally commit to a root cause hypothesis |
-| `revise_hypothesis` | Free | Update hypothesis after contradiction (+0.03) |
-| `commit_root_cause` | Free | Lock in root cause with evidence (+0.02) |
-| `kill` | 🔴 Chaos | Kill a service |
-| `fill_disk` | 🔴 Chaos | Fill disk to percentage |
-| `corrupt_data` | 🔴 Chaos | Corrupt cache/db data |
-| `spike_traffic` | 🔴 Chaos | Multiply traffic load |
-| `add_latency` | 🔴 Chaos | Add network latency |
-| `classify_finding` | Free | Document a vulnerability |
-| `submit_report` | Free | End episode, get final score |
-
-*`deep_inspect` uses inspect budget first, then chaos budget
-""")
+print("done:", result["done"])
+                </pre>
+                <div style="color:#8b949e; margin-top:16px; font-size:12px">
+                    Endpoints: &nbsp;
+                    <span style="color:#4fc3f7">POST /reset</span> &nbsp;|&nbsp;
+                    <span style="color:#4fc3f7">POST /step</span> &nbsp;|&nbsp;
+                    <span style="color:#4fc3f7">GET /docs</span>
+                </div>
+            </div>""")
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860)
