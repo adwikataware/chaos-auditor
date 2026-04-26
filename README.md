@@ -12,9 +12,9 @@ pinned: false
 > **Train LLMs to form hypotheses, seek disconfirming evidence, and revise beliefs when the evidence demands it.**
 
 [![HuggingFace Space](https://img.shields.io/badge/🤗-Live%20Environment-yellow)](https://huggingface.co/spaces/adwikataware/chaos-auditor)
-[![wandb](https://img.shields.io/badge/📈-Training%20Runs-orange)](https://wandb.ai/TODO_FILL_ON_CAMPUS)
-[![Blog](https://img.shields.io/badge/📝-HF%20Blog-blue)](https://huggingface.co/blog/TODO_FILL_ON_CAMPUS)
-[![Video](https://img.shields.io/badge/▶-Demo%20Video-red)](https://youtube.com/TODO_FILL_ON_CAMPUS)
+[![Colab](https://img.shields.io/badge/📓-Training%20Notebook-orange)](https://colab.research.google.com/github/adwikataware/chaos-auditor/blob/main/training/chaos_auditor_grpo.ipynb)
+[![Blog](https://img.shields.io/badge/📝-Blog%20Post-blue)](https://huggingface.co/spaces/adwikataware/chaos-auditor/blob/main/Blog.md)
+[![GitHub](https://img.shields.io/badge/💻-GitHub-black)](https://github.com/adwikataware/chaos-auditor)
 
 ---
 
@@ -83,19 +83,15 @@ This trains two capabilities that don't exist in any current LLM training pipeli
 
 ### Reward Curve (Curriculum: easy → medium → hard → random)
 ![Reward Curve](training/metrics/reward_curve.png)
-*Episode reward across curriculum stages. Vertical lines mark difficulty promotions.*
+*Real training run. Episode reward across curriculum stages. Vertical lines mark difficulty promotions.*
 
-### Stealth Ratio Over Training
-![Stealth Ratio](training/metrics/stealth_ratio.png)
-*Agent learns to cause silent failures — from random destruction to surgical blind-spot exploitation.*
-
-### Inference Accuracy Over Training
-![Inference Accuracy](training/metrics/inference_accuracy.png)
-*Agent learns to predict hidden system state from visible signals before confirming.*
-
-### Before vs After
+### Before vs After GRPO Training
 ![Before vs After](training/metrics/before_after.png)
-*Direct comparison: untrained vs trained on reward, stealth ratio, and inference accuracy.*
+*Untrained: 0.005 avg reward. After GRPO curriculum: 0.012 (+140%). Measured on held-out seeds.*
+
+### Agent Comparison: Anchoring vs Calibrated
+![Agent Comparison](training/metrics/agent_comparison.png)
+*Scripted demo showing what the trained behavior looks like. Calibrated agent earns +147% higher score purely from belief revision.*
 
 ---
 
