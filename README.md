@@ -12,7 +12,7 @@ pinned: false
 > **Train LLMs to form hypotheses, seek disconfirming evidence, and revise beliefs when the evidence demands it.**
 
 [![HuggingFace Space](https://img.shields.io/badge/🤗-Live%20Environment-yellow)](https://huggingface.co/spaces/adwikataware/chaos-auditor)
-[![Colab](https://img.shields.io/badge/📓-Training%20Notebook-orange)](https://colab.research.google.com/github/adwikataware/chaos-auditor/blob/main/training/chaos_auditor_grpo.ipynb)
+[![Colab](https://img.shields.io/badge/📓-Training%20Notebook-orange)](https://colab.research.google.com/drive/1D0EcWRnQTNysf0n6rK7KClyRHFicFI1O?usp=sharing)
 [![Blog](https://img.shields.io/badge/📝-Blog%20Post-blue)](https://huggingface.co/spaces/adwikataware/chaos-auditor/blob/main/Blog.md)
 [![wandb](https://img.shields.io/badge/📈-Training%20Run-yellow)](https://wandb.ai/sohamtakale2905-mit-world-peace-university/chaos-auditor-grpo?nw=nwusersohamtakale2905)
 [![GitHub](https://img.shields.io/badge/💻-GitHub-black)](https://github.com/adwikataware/chaos-auditor)

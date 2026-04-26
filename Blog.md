@@ -111,7 +111,7 @@ The skill Chaos Auditor trains is reasoning correctly about what you cannot see,
 
 Environment and live demo: [HuggingFace Space](https://huggingface.co/spaces/adwikataware/chaos-auditor)
 
-Training notebook: [Google Colab](https://colab.research.google.com/github/adwikataware/chaos-auditor/blob/main/training/chaos_auditor_grpo.ipynb)
+Training notebook: [Google Colab](https://colab.research.google.com/drive/1D0EcWRnQTNysf0n6rK7KClyRHFicFI1O?usp=sharing)
 
 Training metrics: [Weights and Biases](https://wandb.ai/sohamtakale2905-mit-world-peace-university/chaos-auditor-grpo)
 
